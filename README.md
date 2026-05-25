@@ -1,6 +1,6 @@
 # AI Incident Response System
 
-> Multi-agent system for automated detection, diagnosis, and remediation of infrastructure incidents. 5 specialized agents orchestrated with LangGraph, RAG over internal runbooks with Contextual Retrieval, Human-in-the-Loop via Slack, and continuous evaluation with LangSmith.
+> Agentic SRE automation: 5 LangGraph agents that diagnose and remediate production incidents in <10s. RAG over internal runbooks, Human-in-the-Loop via Slack, full traceability with LangSmith.
 
 ---
 
@@ -16,6 +16,7 @@
 8. [Setup](#8-setup)
 9. [Usage](#9-usage)
 10. [Observability](#10-observability)
+11. [Roadmap](#11-roadmap)
 
 ---
 
@@ -264,7 +265,7 @@ All implemented with **Pydantic v2** -- strict validation, native JSON Schema, r
 
 **Decision:** Direct evaluation against ground truth with LangSmith and custom metrics.
 
-**Reasons:** RAGAS has dependency conflicts with LangGraph 0.2+ in Python 3.11 and adds LLM cost per evaluation. Direct evaluation against a dataset of 8 historical incidents with real root causes is more relevant than abstract faithfulness metrics. Metrics implemented: top-1 accuracy, top-3 accuracy, keyword overlap score, severity accuracy, HITL rate, time-to-diagnose.
+**Reasons:** RAGAS has dependency conflicts with LangGraph 0.2+ in Python 3.11 and adds LLM cost per evaluation. Direct evaluation against a dataset of 8 historical incidents with real root causes is more relevant than abstract faithfulness metrics.
 
 ---
 
@@ -284,9 +285,7 @@ Evaluation over **8 historical incidents** with real ground truth (root cause, s
 | Avg diagnosis attempts | 1.0 | -- |
 | Time-to-diagnose (avg) | ~7s | <30s |
 
-**Analysis:** The system correctly diagnoses incidents with clear signals in logs and commits (DB connection pool, N+1 queries, Elasticsearch). It struggles with infrastructure incidents without code signals (expired SSL, full disk) where the GitHub mock provides no differential context. The dev/prod gap closes with Claude Sonnet, which has better reasoning over ambiguous signals.
-
-**LangSmith observability:** Each execution generates a full trace with input/output per node, token usage, and latency. Typical execution: ~5.5s, ~5.1K tokens.
+**Analysis:** The system correctly diagnoses incidents with clear signals in logs and commits (DB connection pool, N+1 queries, Elasticsearch). It struggles with infrastructure incidents without code signals (expired SSL, full disk). The dev/prod gap closes with Claude Sonnet, which has better reasoning over ambiguous signals.
 
 ---
 
@@ -534,11 +533,52 @@ When Agent 4 generates a HIGH risk action, the bot sends to `#incident-approvals
 
 ---
 
-## Author
+## 11. Roadmap
 
-**David Font Munoz** -- AI/ML Engineer
-[GitHub](https://github.com/Dafomu96) · [GitLab](https://gitlab.com/Dafomu96) · [LinkedIn](https://linkedin.com/in/davidfontmunoz)
+### Week 1 -- Core skeleton [DONE]
+- [x] Repository structure and Pydantic v2 schemas
+- [x] `IncidentState` TypedDict and `StateGraph` with conditional edges
+- [x] All 5 agents with main logic
+- [x] Service-specific mock tools
+- [x] RAG pipeline (Contextual Retrieval)
+- [x] 71 tests passing
+
+### Week 2 -- Real integrations [DONE]
+- [x] ChromaDB with 5 seeded runbooks
+- [x] End-to-end test with real Groq
+- [x] HITL with real Slack bot -- Approve/Reject buttons working
+- [x] Learning loop: postmortem -> ChromaDB verified
+- [x] FastAPI with REST and WebSocket endpoints
+
+### Week 3 -- Evaluation + CI/CD + Docker [DONE]
+- [x] LangSmith integrated -- full traces per execution
+- [x] Dataset of 8 historical incidents with ground truth
+- [x] Evaluation runner with custom metrics
+- [x] GitHub Actions CI/CD
+- [x] Docker working end-to-end
+
+### Week 4 -- Frontend + Documentation [DONE]
+- [x] React + Vite dashboard with live pipeline log
+- [x] HITL queue with Approve/Reject from dashboard
+- [x] Evaluation metrics tab
+- [x] 5 complete ADRs in `/docs/`
+- [x] Railway deployment configured
 
 ---
 
+## Project Summary
 
+**For recruiters:** AI-powered incident response system that automates the diagnosis and remediation of production infrastructure outages. 5 specialized AI agents work together to detect, investigate, diagnose, remediate, and document incidents automatically. High-risk actions require human approval via a Slack bot before execution. Reduces time-to-diagnose from 40-60 minutes to under 10 seconds. Evaluated on 8 real historical incidents, 71 automated tests, deployed with Docker.
+
+**For technical interviewers:** 5 LangGraph agents with cyclic state and conditional edges -- the Diagnostic Reasoner loops back to the Data Collector when confidence is low. RAG over internal runbooks with Contextual Retrieval (67% fewer retrieval errors vs classic RAG). Pydantic v2 structured outputs, LangSmith tracing, Slack HITL with Approve/Reject buttons. Top-3 diagnostic accuracy of 62% with Groq in development; architecture prepared for Claude Sonnet in production.
+
+---
+
+## Author
+
+**David Font Munoz** -- AI/ML Engineer
+[GitHub](https://github.com/Dafomu96) · [GitLab](https://gitlab.com/Dafomu96) · [LinkedIn](https://www.linkedin.com/in/davidfontmunoz/)
+
+---
+
+*Weeks 1-4 completed.*
