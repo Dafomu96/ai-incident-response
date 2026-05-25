@@ -1,426 +1,448 @@
 # AI Incident Response System
 
-> Sistema multi-agente para detección, diagnóstico y remediación automática de incidencias de infraestructura. 5 agentes especializados orquestados con LangGraph, RAG sobre runbooks internos con Contextual Retrieval, Human-in-the-Loop via Slack, y evaluación continua con LangSmith.
+> Multi-agent system for automated detection, diagnosis, and remediation of infrastructure incidents. 5 specialized agents orchestrated with LangGraph, RAG over internal runbooks with Contextual Retrieval, Human-in-the-Loop via Slack, and continuous evaluation with LangSmith.
 
 ---
 
-## Índice
+## Table of Contents
 
-1. [Motivación y contexto](#1-motivación-y-contexto)
-2. [Arquitectura del sistema](#2-arquitectura-del-sistema)
-3. [Los 5 agentes](#3-los-5-agentes)
-4. [Stack técnico completo](#4-stack-técnico-completo)
+1. [Motivation](#1-motivation)
+2. [Architecture](#2-architecture)
+3. [The 5 Agents](#3-the-5-agents)
+4. [Technical Stack](#4-technical-stack)
 5. [Architecture Decision Records (ADRs)](#5-architecture-decision-records-adrs)
-6. [Resultados de evaluación](#6-resultados-de-evaluación)
-7. [Estructura del repositorio](#7-estructura-del-repositorio)
-8. [Instalación y configuración](#8-instalación-y-configuración)
-9. [Uso y ejemplos](#9-uso-y-ejemplos)
-10. [Observabilidad](#10-observabilidad)
-11. [Roadmap](#11-roadmap)
+6. [Evaluation Results](#6-evaluation-results)
+7. [Repository Structure](#7-repository-structure)
+8. [Setup](#8-setup)
+9. [Usage](#9-usage)
+10. [Observability](#10-observability)
 
 ---
 
-## 1. Motivación y contexto
+## 1. Motivation
 
-Los equipos de SRE dedican una media de 40-60 minutos en detectar la causa raíz de un incidente P1. En ese tiempo, un sistema de producción puede generar pérdidas de decenas de miles de euros y afectar a miles de usuarios. El proceso manual tiene tres problemas estructurales:
+SRE teams spend an average of 40-60 minutes identifying the root cause of a P1 incident. During that time, a production system can generate losses of tens of thousands of euros and affect thousands of users. The manual process has three structural problems:
 
-**Fragmentación de contexto.** Los logs están en Loki, las métricas en Prometheus, los commits recientes en GitHub y el estado de los pods en Kubernetes. El SRE de guardia tiene que correlacionar estas fuentes manualmente bajo presión.
+**Context fragmentation.** Logs are in Loki, metrics in Prometheus, recent commits in GitHub, and pod status in Kubernetes. The on-call SRE must correlate these sources manually under pressure.
 
-**Conocimiento no persistente.** Los runbooks y postmortems históricos existen, pero no se consultan sistemáticamente. Cada incidente se resuelve desde cero sin aprovechar el conocimiento acumulado.
+**Non-persistent knowledge.** Runbooks and historical postmortems exist but are not consulted systematically. Each incident is resolved from scratch without leveraging accumulated knowledge.
 
-**Decisiones de alto riesgo sin contexto completo.** El ingeniero que aprueba un rollback a las 3am no siempre tiene acceso al diagnóstico completo que llevó a esa recomendación.
+**High-risk decisions without full context.** The engineer approving a rollback at 3am does not always have access to the complete diagnosis that led to that recommendation.
 
-Este sistema aborda los tres problemas: recopila contexto en paralelo, consulta automáticamente la base de conocimiento histórica, y presenta las decisiones de alto riesgo con todo el contexto necesario para una aprobación informada.
+This system addresses all three: it collects context in parallel, automatically queries the historical knowledge base, and presents high-risk decisions with all the context needed for an informed approval.
 
 ---
 
-## 2. Arquitectura del sistema
+## 2. Architecture
 
-### Flujo completo
+### Full flow
 
 ```
-Alerta Prometheus/PagerDuty
-         │
-         ▼
-┌─────────────────┐
-│  Agente 1       │  Groq Llama 3.3 70B — clasificación P1/P2/P3
-│  Monitor &      │  Latencia objetivo: <500ms
-│  Triage         │
-└────────┬────────┘
-         │ [P1/P2: escalar] ──────────────── [P3 trivial: resolver automáticamente]
-         ▼
-┌─────────────────┐
-│  Agente 2       │  asyncio.gather — recopilación paralela
-│  Data           │  Loki (logs) + Prometheus (métricas) +
-│  Collector      │  GitHub API (commits) + K8s API (pods)
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│  Agente 3       │  Groq Llama 3.3 70B (dev) / Claude Sonnet (prod)
-│  Diagnostic     │  RAG sobre runbooks + postmortems históricos
-│  Reasoner  ─────┼──[confianza baja]──► Agente 2 (retry con ventana ampliada)
-│  (Core)         │  Chain-of-thought + structured output Pydantic
-└────────┬────────┘
-         │ [confianza ≥ umbral]
-         ▼
-┌─────────────────┐
-│  Agente 4       │  Clasifica acciones por riesgo (LOW/HIGH)
-│  Remediation    │  LOW: auto-ejecutable
-│  Planner        │  HIGH: genera HITLRequest para aprobación Slack
-└────────┬────────┘
-         │
-    ┌────┴────┐
-    │         │
-    ▼         ▼
+Prometheus/PagerDuty Alert
+         |
+         v
++-----------------+
+|  Agent 1        |  Groq Llama 3.3 70B -- P1/P2/P3 classification
+|  Monitor &      |  Target latency: <500ms
+|  Triage         |
++--------+--------+
+         | [P1/P2: escalate] ----------- [P3 trivial: auto-resolve]
+         v
++-----------------+
+|  Agent 2        |  asyncio.gather -- parallel collection
+|  Data           |  Loki (logs) + Prometheus (metrics) +
+|  Collector      |  GitHub API (commits) + K8s API (pods)
++--------+--------+
+         |
+         v
++-----------------+
+|  Agent 3        |  Groq Llama 3.3 70B (dev) / Claude Sonnet (prod)
+|  Diagnostic     |  RAG over runbooks + historical postmortems
+|  Reasoner  -----+--[low confidence]--> Agent 2 (retry, wider window)
+|  (Core)         |  Chain-of-thought + Pydantic structured output
++--------+--------+
+         | [confidence >= threshold]
+         v
++-----------------+
+|  Agent 4        |  Classifies actions by risk (LOW/HIGH)
+|  Remediation    |  LOW: auto-executable
+|  Planner        |  HIGH: generates HITLRequest for Slack approval
++--------+--------+
+         |
+    +----+----+
+    |         |
+    v         v
  [HIGH]    [LOW / auto]
- HITL       Ejecución
- Slack ──►  automática
- aprobación │
-    └────────┘
-         │
-         ▼
-┌─────────────────┐
-│  Agente 5       │  Genera postmortem estructurado
-│  Postmortem     │  Ingesta en ChromaDB ◄── Loop de aprendizaje
-│  Writer         │
-└─────────────────┘
+ HITL       Auto
+ Slack -->  execution
+ approval   |
+    +--------+
+         |
+         v
++-----------------+
+|  Agent 5        |  Generates structured postmortem
+|  Postmortem     |  Ingests into ChromaDB <-- Learning loop
+|  Writer         |
++-----------------+
 ```
 
-### Propiedades del grafo LangGraph
+### LangGraph graph properties
 
-**Estado persistente.** El `IncidentState` (TypedDict tipado) se persiste en cada nodo mediante checkpointing. Si el sistema cae a mitad de un incidente P1, retoma exactamente donde lo dejó sin perder contexto.
+**Persistent state.** `IncidentState` (typed TypedDict) is persisted at each node via checkpointing. If the system crashes mid-incident, it resumes exactly where it left off.
 
-**Loop cíclico nativo.** Si el Diagnostic Reasoner determina que necesita más datos (`requires_more_data=True`), el grafo vuelve automáticamente al Data Collector con una ventana temporal ampliada. Máximo 2 reintentos para evitar loops infinitos.
+**Native cyclic loop.** If the Diagnostic Reasoner determines it needs more data (`requires_more_data=True`), the graph automatically returns to the Data Collector with an expanded time window. Maximum 2 retries to prevent infinite loops.
 
-**Edges condicionales.** Tres puntos de decisión explícitos en el grafo: escalar o auto-resolver (tras triage), rediagnosticar o planificar (tras diagnóstico), HITL o ejecutar (tras planificación).
+**Conditional edges.** Three explicit decision points in the graph: escalate or auto-resolve (after triage), re-diagnose or plan (after diagnosis), HITL or execute (after planning).
 
-**Recuperación ante errores.** Nodo `error` dedicado que captura excepciones, las registra en LangSmith, y previene que el grafo quede en estado inconsistente.
-
----
-
-## 3. Los 5 agentes
-
-### Agente 1 — Monitor & Triage (`agents/monitor_triage.py`)
-
-**Rol:** Entry point del sistema. Primer contacto con la alerta.
-
-**Modelo:** Groq Llama 3.3 70B — elegido por latencia (<500ms), no por capacidad de razonamiento.
-
-**Responsabilidades:** recibe `IncidentAlert` de Prometheus o PagerDuty, clasifica severidad P1/P2/P3, extrae componentes afectados y ventana temporal, decide si escalar al grafo completo.
-
-**Output:** `IncidentReport` — severidad, componentes afectados, flag de escalado, razonamiento de clasificación.
+**Error recovery.** Dedicated `error` node that captures exceptions, logs them to LangSmith, and prevents the graph from entering an inconsistent state.
 
 ---
 
-### Agente 2 — Data Collector (`agents/data_collector.py`)
+## 3. The 5 Agents
 
-**Rol:** Investigador. Recopila contexto completo de forma paralela.
+### Agent 1 -- Monitor & Triage (`agents/monitor_triage.py`)
 
-**Modelo:** Sin LLM — solo tool-calling directo a APIs.
+**Role:** System entry point. First contact with the alert.
 
-**Responsabilidades:** logs de Loki (últimas N horas), métricas de Prometheus (error rate, latencia p99, CPU, memoria), commits y PRs de GitHub, estado de pods de Kubernetes.
+**Model:** Groq Llama 3.3 70B -- chosen for latency (<500ms), not reasoning capability.
 
-**Paralelismo:** `asyncio.gather` — las 4 fuentes se consultan simultáneamente. Todos los tools tienen fallback mock activado automáticamente cuando la URL/token no está configurado.
+**Responsibilities:** receives `IncidentAlert` from Prometheus or PagerDuty, classifies severity P1/P2/P3, extracts affected components and time window, decides whether to escalate to the full graph.
 
----
-
-### Agente 3 — Diagnostic Reasoner (`agents/diagnostic_reasoner.py`)
-
-**Rol:** Core del proyecto. El agente más complejo del sistema.
-
-**Modelo:** Groq Llama 3.3 70B (desarrollo) / Claude Sonnet (producción).
-
-**Responsabilidades:** razona sobre el contexto completo, consulta la base RAG de runbooks y postmortems históricos, genera hipótesis de causa raíz ordenadas por probabilidad con evidencias, activa `requires_more_data=True` si la confianza es baja.
-
-**Output:** `DiagnosisResult` con hipótesis, `overall_confidence`, `reasoning_chain` completo.
+**Output:** `IncidentReport` -- severity, affected components, escalation flag, classification reasoning.
 
 ---
 
-### Agente 4 — Remediation Planner (`agents/remediation_planner.py`)
+### Agent 2 -- Data Collector (`agents/data_collector.py`)
 
-**Rol:** Traductor del diagnóstico en acciones concretas.
+**Role:** Investigator. Collects full context in parallel.
 
-**Modelo:** Groq Llama 3.3 70B (desarrollo) / Claude Sonnet (producción).
+**Model:** No LLM -- direct tool-calling to APIs only.
 
-**Matriz de permisos:**
-- **LOW (auto-ejecutable):** restart pod, clear cache, reload config, scale replicas
-- **HIGH (requiere aprobación):** rollback deployment, eliminar datos, modificar firewall
+**Responsibilities:** Loki logs (last N hours), Prometheus metrics (error rate, p99 latency, CPU, memory), GitHub commits and PRs, Kubernetes pod status.
 
-**Output:** `RemediationPlan` con acciones clasificadas + `HITLRequest` para acciones de alto riesgo.
+**Parallelism:** `asyncio.gather` -- all 4 sources queried simultaneously. All tools have automatic mock fallback when URL/token is not configured.
 
 ---
 
-### Agente 5 — Postmortem Writer (`agents/postmortem_writer.py`)
+### Agent 3 -- Diagnostic Reasoner (`agents/diagnostic_reasoner.py`)
 
-**Rol:** Cierre del loop. Genera el postmortem y retroalimenta el sistema.
+**Role:** Core of the project. The most complex agent in the system.
 
-**Modelo:** Groq Llama 3.3 70B (desarrollo) / Claude Sonnet (producción).
+**Model:** Groq Llama 3.3 70B (dev) / Claude Sonnet (prod).
 
-**Diferenciador clave:** ingesta el postmortem generado en ChromaDB para que los diagnósticos futuros se beneficien del conocimiento acumulado. Loop de aprendizaje cerrado.
+**Responsibilities:** reasons over the full collected context, queries the RAG knowledge base of runbooks and historical postmortems, generates root cause hypotheses ordered by probability with evidence, sets `requires_more_data=True` if confidence is low.
 
-**Output:** `PostmortemDraft` + ingesta automática en la base RAG.
+**Output:** `DiagnosisResult` with hypotheses, `overall_confidence`, full `reasoning_chain`.
 
 ---
 
-## 4. Stack técnico completo
+### Agent 4 -- Remediation Planner (`agents/remediation_planner.py`)
 
-### Orquestación de agentes
+**Role:** Translates the diagnosis into concrete actions.
 
-| Componente | Tecnología | Decisión |
+**Model:** Groq Llama 3.3 70B (dev) / Claude Sonnet (prod).
+
+**Permission matrix:**
+- **LOW (auto-executable):** restart pod, clear cache, reload config, scale replicas
+- **HIGH (requires approval):** rollback deployment, delete data, modify firewall
+
+**Output:** `RemediationPlan` with classified actions + `HITLRequest` for high-risk actions.
+
+---
+
+### Agent 5 -- Postmortem Writer (`agents/postmortem_writer.py`)
+
+**Role:** Closes the loop. Generates the postmortem and feeds back into the system.
+
+**Model:** Groq Llama 3.3 70B (dev) / Claude Sonnet (prod).
+
+**Key differentiator:** ingests the generated postmortem into ChromaDB so future diagnoses benefit from accumulated knowledge. Closed learning loop.
+
+**Output:** `PostmortemDraft` + automatic ingestion into the RAG knowledge base.
+
+---
+
+## 4. Technical Stack
+
+### Agent orchestration
+
+| Component | Technology | Decision |
 |---|---|---|
-| Framework de agentes | LangGraph | Estado cíclico, checkpointing, conditional edges |
-| Estado del grafo | TypedDict tipado | Tipado estático, compatible con mypy |
-| Checkpointing dev | MemorySaver | In-memory, sin dependencias |
-| Checkpointing prod | SqliteSaver | Persistencia entre reinicios |
+| Agent framework | LangGraph | Cyclic state, checkpointing, conditional edges |
+| Graph state | Typed TypedDict | Static typing, mypy compatible |
+| Checkpointing dev | MemorySaver | In-memory, no dependencies |
+| Checkpointing prod | SqliteSaver | Persistence across restarts |
 
-### Modelos LLM
+### LLM Models
 
-| Agente | Modelo (dev) | Modelo (prod) | Criterio |
+| Agent | Model (dev) | Model (prod) | Criterion |
 |---|---|---|---|
-| Agente 1 (Triage) | Groq Llama 3.3 70B | Groq Llama 3.3 70B | Latencia <500ms |
-| Agentes 3/4/5 | Groq Llama 3.3 70B | Claude Sonnet | Razonamiento profundo |
-| RAG contextualización | Groq Llama 3.3 70B | Claude Haiku | Coste mínimo por chunk |
-| Fallback global | GPT-4o | GPT-4o | Resiliencia |
+| Agent 1 (Triage) | Groq Llama 3.3 70B | Groq Llama 3.3 70B | Latency <500ms |
+| Agents 3/4/5 | Groq Llama 3.3 70B | Claude Sonnet | Deep reasoning |
+| RAG contextualization | Groq Llama 3.3 70B | Claude Haiku | Minimum cost per chunk |
+| Global fallback | GPT-4o | GPT-4o | Resilience |
 
-### RAG — Knowledge Base
+### RAG -- Knowledge Base
 
-| Componente | Tecnología | Decisión |
+| Component | Technology | Decision |
 |---|---|---|
-| Vector store | ChromaDB | Persistencia local, fácil setup |
-| Embeddings | sentence-transformers (all-MiniLM-L6-v2) | Open source, sin coste por llamada |
-| Chunking | RecursiveCharacterTextSplitter | 512 tokens, 50 de overlap |
-| Contextualización | Contextual Retrieval (Anthropic) | +50-100 tokens de contexto por chunk |
-| Reranking | Cohere Rerank v3 | Mejora precisión final (opcional) |
+| Vector store | ChromaDB | Local persistence, easy setup |
+| Embeddings | sentence-transformers (all-MiniLM-L6-v2) | Open source, no per-call cost |
+| Chunking | RecursiveCharacterTextSplitter | 512 tokens, 50 overlap |
+| Contextualization | Contextual Retrieval (Anthropic) | +50-100 context tokens per chunk |
+| Reranking | Cohere Rerank v3 | Improved retrieval precision (optional) |
 
-### Schemas y validación
+### Schemas and validation
 
-Todos implementados con **Pydantic v2** — validación estricta, JSON Schema nativo, retry logic ante errores de parsing: `IncidentAlert`, `IncidentReport`, `DiagnosisResult`, `RemediationPlan`, `HITLRequest`, `PostmortemDraft`.
+All implemented with **Pydantic v2** -- strict validation, native JSON Schema, retry logic on parsing errors: `IncidentAlert`, `IncidentReport`, `DiagnosisResult`, `RemediationPlan`, `HITLRequest`, `PostmortemDraft`.
 
-### Infraestructura
+### Infrastructure
 
-| Componente | Tecnología |
+| Component | Technology |
 |---|---|
 | API backend | FastAPI + WebSockets |
-| Containerización | Docker + docker-compose |
+| Containerization | Docker + docker-compose |
 | CI/CD | GitHub Actions |
-| Observabilidad | LangSmith |
-| HITL | Slack bot con botones interactivos |
+| Observability | LangSmith |
+| HITL | Slack bot with interactive buttons |
 
 ---
 
 ## 5. Architecture Decision Records (ADRs)
 
-### ADR-001 — LangGraph sobre crewAI
+### ADR-001 -- LangGraph over crewAI
 
-**Contexto:** Se evaluaron LangGraph, crewAI y AutoGen como frameworks de orquestación.
+**Context:** LangGraph, crewAI and AutoGen were evaluated as orchestration frameworks.
 
-**Decisión:** LangGraph.
+**Decision:** LangGraph.
 
-**Razones:** los incidentes tienen estado complejo y no lineal. El Diagnostic Reasoner puede necesitar volver al Data Collector si la confianza del diagnóstico es baja. crewAI está optimizado para pipelines lineales con roles fijos — no soporta este tipo de loop condicional de forma nativa. LangGraph permite exactamente el patrón que necesita este sistema: grafo cíclico con estado tipado, checkpointing para recuperación ante fallos, y conditional edges para implementar la lógica de decisión de forma explícita y testeable.
+**Reasons:** Incidents have complex, non-linear state. The Diagnostic Reasoner may need to return to the Data Collector if diagnosis confidence is low. crewAI is optimized for linear pipelines with fixed roles and does not natively support conditional loops. LangGraph provides exactly the pattern this system needs: cyclic graph with typed state, checkpointing for fault recovery, and conditional edges for explicit, testable decision logic.
 
-**Trade-off asumido:** curva de aprendizaje más pronunciada y código más verbose. Aceptable a cambio del control granular del flujo.
-
----
-
-### ADR-002 — Tres modelos con criterio por task
-
-**Contexto:** se podría usar un único modelo para todos los agentes.
-
-**Decisión:** modelos distintos según el tipo de tarea.
-
-**Razones:** el Agente 1 necesita latencia por debajo de 500ms — Groq con Llama 3.3 70B responde en ~300ms para clasificaciones simples. Los Agentes 3, 4 y 5 necesitan razonamiento profundo y structured output fiable — Claude Sonnet en producción. Claude Haiku para contextualización de chunks RAG donde se generan centenares de llamadas pequeñas. GPT-4o como fallback global.
-
-**Trade-off asumido:** mayor complejidad operacional (múltiples API keys). Compensado por la optimización coste-latencia-calidad por tarea.
+**Trade-off:** More verbose code and steeper learning curve than crewAI. Acceptable in exchange for granular flow control.
 
 ---
 
-### ADR-003 — Contextual Retrieval sobre RAG clásico
+### ADR-002 -- Three models with task-specific criteria
 
-**Contexto:** se implementó inicialmente un RAG clásico (chunk → embedding → retrieval).
+**Context:** A single model could be used for all agents.
 
-**Decisión:** Contextual Retrieval (técnica publicada por Anthropic, septiembre 2024).
+**Decision:** Different models per task type.
 
-**Razones:** los runbooks operacionales al fragmentarse en chunks de 512 tokens pierden el contexto que les da significado. Contextual Retrieval añade 50-100 tokens de contexto generados por LLM a cada chunk antes de crear el embedding. Según benchmarks de Anthropic, esto reduce los errores de retrieval hasta un 67% respecto al RAG clásico.
+**Reasons:** Agent 1 needs latency below 500ms -- Groq with Llama 3.3 70B responds in ~300ms. Agents 3, 4 and 5 need deep reasoning and reliable structured outputs -- Claude Sonnet in production. Claude Haiku for RAG chunk contextualization where hundreds of small calls are generated. GPT-4o as global fallback.
 
-**Trade-off asumido:** coste adicional de embedding en ingesta (one-time por documento, no en retrieval). Compensado por la mejora de precisión diagnóstica.
-
----
-
-### ADR-004 — HITL para acciones HIGH risk, no por severidad
-
-**Contexto:** se debatió si implementar HITL para todos los incidentes o solo para algunos.
-
-**Decisión:** matriz de permisos por tipo de acción, no por severidad del incidente.
-
-**Razones:** HITL universal eliminaría el beneficio de automatización. La variable determinante no es la severidad sino el riesgo de la acción: acciones reversibles de bajo impacto (restart pod, clear cache) se ejecutan automáticamente aunque el incidente sea P1. Acciones destructivas (rollback deploy, modificar red) requieren aprobación humana aunque el incidente sea P2.
-
-**Trade-off asumido:** la clasificación LOW/HIGH del Agente 4 puede ser incorrecta en casos edge. El log de auditoría inmutable permite identificar y corregir estos casos.
+**Trade-off:** Higher operational complexity (multiple API keys). Offset by cost-latency-quality optimization per task.
 
 ---
 
-### ADR-005 — Evaluación custom sobre RAGAS
+### ADR-003 -- Contextual Retrieval over classic RAG
 
-**Contexto:** RAGAS es el estándar para evaluación de sistemas RAG.
+**Context:** Classic RAG (chunk -> embedding -> retrieval) was initially implemented.
 
-**Decisión:** evaluación directa contra ground truth con LangSmith y métricas custom.
+**Decision:** Contextual Retrieval (Anthropic, September 2024).
 
-**Razones:** RAGAS tiene conflictos de dependencias con LangGraph en Python 3.11 y añade coste de LLM por evaluación. La evaluación directa contra un dataset de 8 incidentes históricos con causa raíz real es más relevante para este caso de uso que métricas abstractas de faithfulness. Métricas implementadas: top-1 accuracy, top-3 accuracy, keyword overlap score, severity accuracy, HITL rate, time-to-diagnose.
+**Reasons:** Operational runbooks lose meaning when split into 512-token chunks. Contextual Retrieval adds 50-100 LLM-generated context tokens to each chunk before embedding. According to Anthropic benchmarks, this reduces retrieval errors by up to 67% vs classic RAG.
+
+**Trade-off:** Additional ingestion cost (one-time per document, not per retrieval). Offset by improved diagnostic precision.
 
 ---
 
-## 6. Resultados de evaluación
+### ADR-004 -- HITL by action risk, not incident severity
 
-Evaluación sobre **8 incidentes históricos** con ground truth real (causa raíz, severidad, acciones correctas). Modelo: Groq Llama 3.3 70B (desarrollo).
+**Context:** Whether to implement HITL for all incidents or only some.
 
-| Métrica | Resultado | Objetivo producción |
+**Decision:** Permission matrix by action type, independent of incident severity.
+
+**Reasons:** Severity describes incident impact. Action risk describes remediation impact. They are orthogonal dimensions. A reversible action (restart pod) is safe to auto-execute even in a P1. A destructive action (rollback deployment) requires human approval even in a P2.
+
+**Trade-off:** Agent 4's LOW/HIGH classification may be wrong in edge cases. The immutable audit log of all decisions allows identifying and correcting these cases.
+
+---
+
+### ADR-005 -- Custom evaluation over RAGAS
+
+**Context:** RAGAS is the standard framework for RAG system evaluation.
+
+**Decision:** Direct evaluation against ground truth with LangSmith and custom metrics.
+
+**Reasons:** RAGAS has dependency conflicts with LangGraph 0.2+ in Python 3.11 and adds LLM cost per evaluation. Direct evaluation against a dataset of 8 historical incidents with real root causes is more relevant than abstract faithfulness metrics. Metrics implemented: top-1 accuracy, top-3 accuracy, keyword overlap score, severity accuracy, HITL rate, time-to-diagnose.
+
+---
+
+## 6. Evaluation Results
+
+Evaluation over **8 historical incidents** with real ground truth (root cause, severity, correct actions). Model: Groq Llama 3.3 70B (development).
+
+| Metric | Result | Production target |
 |---|---|---|
 | Severity accuracy | 62% | >85% |
 | Top-1 diagnostic accuracy | 38% | >70% |
 | Top-3 diagnostic accuracy | 62% | >90% |
 | Avg keyword score | 23% | >50% |
-| Avg confidence | 84% | — |
-| HITL trigger rate | 100% | — |
-| Postmortem rate | 100% | — |
-| Avg diagnosis attempts | 1.0 | — |
+| Avg confidence | 84% | -- |
+| HITL trigger rate | 100% | -- |
+| Postmortem rate | 100% | -- |
+| Avg diagnosis attempts | 1.0 | -- |
 | Time-to-diagnose (avg) | ~7s | <30s |
 
-**Análisis:** el sistema diagnostica correctamente incidentes con señales claras en logs y commits (DB connection pool, N+1 queries, Elasticsearch). Falla en incidentes de infraestructura sin señal en código (SSL expirado, disco lleno) donde el mock de GitHub no aporta contexto diferencial. La brecha desarrollo/producción se cierra con Claude Sonnet, que tiene mejor capacidad de razonamiento sobre señales ambiguas.
+**Analysis:** The system correctly diagnoses incidents with clear signals in logs and commits (DB connection pool, N+1 queries, Elasticsearch). It struggles with infrastructure incidents without code signals (expired SSL, full disk) where the GitHub mock provides no differential context. The dev/prod gap closes with Claude Sonnet, which has better reasoning over ambiguous signals.
 
-**Observabilidad en LangSmith:** cada ejecución genera una traza completa con input/output por nodo, token usage, y latencia. Total ejecución: ~5.5s, ~5.1K tokens por incidente.
+**LangSmith observability:** Each execution generates a full trace with input/output per node, token usage, and latency. Typical execution: ~5.5s, ~5.1K tokens.
 
 ---
 
-## 7. Estructura del repositorio
+## 7. Repository Structure
 
 ```
 ai-incident-response/
-├── agents/                     # Los 5 agentes LangGraph
-│   ├── monitor_triage.py       # Agente 1: clasificación P1/P2/P3 con Groq
-│   ├── data_collector.py       # Agente 2: recopilación paralela con asyncio
-│   ├── diagnostic_reasoner.py  # Agente 3: RAG + chain-of-thought (core)
-│   ├── remediation_planner.py  # Agente 4: plan de remediación + HITL trigger
-│   └── postmortem_writer.py    # Agente 5: postmortem + ingesta RAG
-│
-├── graph/                      # Orquestación LangGraph
-│   ├── state.py                # IncidentState — TypedDict tipado
-│   ├── workflow.py             # StateGraph + conditional edges
-│   └── checkpointer.py        # MemorySaver (dev) / SqliteSaver (prod)
-│
-├── tools/                      # Tool-calling a APIs externas
-│   ├── prometheus.py           # Métricas históricas (mock específico por servicio)
-│   ├── loki.py                 # Logs de las últimas N horas (mock específico)
-│   ├── github_api.py           # Commits y PRs recientes (mock específico)
-│   ├── kubernetes_api.py       # Estado de pods (con mock)
-│   └── slack_hitl.py          # Slack bot HITL con botones Approve/Reject
-│
-├── rag/                        # Pipeline RAG con Contextual Retrieval
-│   ├── ingestion.py            # Chunking + contextualización + embedding
-│   ├── retriever.py            # Dense search + Cohere reranker opcional
-│   ├── chroma_store.py         # Singleton ChromaDB
-│   └── seed_runbooks.py        # 5 runbooks de ejemplo para ingesta inicial
-│
-├── schemas/                    # Pydantic v2 — structured outputs tipados
-│   ├── incident.py             # IncidentAlert + IncidentReport
-│   ├── diagnosis.py            # DiagnosisResult + RootCauseHypothesis
-│   ├── remediation.py          # RemediationPlan + HITLRequest
-│   └── postmortem.py           # PostmortemDraft + to_rag_document()
-│
-├── evals/                      # Evaluación con LangSmith + ground truth
-│   ├── datasets/
-│   │   └── historical_incidents.json   # 8 incidentes con causa raíz real
-│   ├── run_evals.py            # Runner de evaluaciones
-│   ├── metrics.py              # Top-1/3 accuracy, keyword score, severity accuracy
-│   └── results_latest.json     # Último resultado de evaluación
-│
-├── api/                        # FastAPI backend
-│   └── main.py                 # REST + WebSocket + /slack/actions callback
-│
-├── infra/                      # Infraestructura
-│   ├── Dockerfile
-│   └── docker-compose.yml
-│
-├── .github/workflows/
-│   └── ci.yml                  # Tests + lint + Docker build en cada push
-│
-├── docs/                       # Architecture Decision Records
-│   ├── ADR-001-langgraph.md
-│   ├── ADR-002-models.md
-│   ├── ADR-003-contextual-retrieval.md
-│   ├── ADR-004-hitl.md
-│   └── ADR-005-evaluation.md
-│
-├── tests/                      # 52 tests — schemas, routing, tools, HITL, API
-│   ├── test_schemas.py
-│   ├── test_state.py
-│   ├── test_tools_mock.py
-│   └── test_hitl.py
-│
-├── run_incident.py             # Script demo end-to-end
-├── pyproject.toml
-├── .env.example
-└── README.md
+|-- agents/                     # The 5 LangGraph agents
+|   |-- monitor_triage.py       # Agent 1: P1/P2/P3 classification with Groq
+|   |-- data_collector.py       # Agent 2: parallel collection with asyncio
+|   |-- diagnostic_reasoner.py  # Agent 3: RAG + chain-of-thought (core)
+|   |-- remediation_planner.py  # Agent 4: remediation plan + HITL trigger
+|   `-- postmortem_writer.py    # Agent 5: postmortem + RAG ingestion
+|
+|-- graph/                      # LangGraph orchestration
+|   |-- state.py                # IncidentState -- typed TypedDict
+|   |-- workflow.py             # StateGraph + conditional edges
+|   `-- checkpointer.py         # MemorySaver (dev) / SqliteSaver (prod)
+|
+|-- tools/                      # Tool-calling to external APIs
+|   |-- prometheus.py           # Historical metrics (service-specific mock)
+|   |-- loki.py                 # Logs for last N hours (service-specific mock)
+|   |-- github_api.py           # Recent commits and PRs (service-specific mock)
+|   |-- kubernetes_api.py       # Pod status (with mock)
+|   `-- slack_hitl.py           # Slack bot HITL with Approve/Reject buttons
+|
+|-- rag/                        # RAG pipeline with Contextual Retrieval
+|   |-- ingestion.py            # Chunking + contextualization + embedding
+|   |-- retriever.py            # Dense search + optional Cohere reranker
+|   |-- chroma_store.py         # ChromaDB singleton
+|   `-- seed_runbooks.py        # 5 example runbooks for initial ingestion
+|
+|-- schemas/                    # Pydantic v2 -- typed structured outputs
+|   |-- incident.py             # IncidentAlert + IncidentReport
+|   |-- diagnosis.py            # DiagnosisResult + RootCauseHypothesis
+|   |-- remediation.py          # RemediationPlan + HITLRequest
+|   `-- postmortem.py           # PostmortemDraft + to_rag_document()
+|
+|-- evals/                      # Evaluation with LangSmith + ground truth
+|   |-- datasets/
+|   |   `-- historical_incidents.json   # 8 incidents with real root causes
+|   |-- run_evals.py            # Evaluation runner
+|   |-- metrics.py              # Top-1/3 accuracy, keyword score, severity accuracy
+|   `-- results_latest.json     # Latest evaluation results
+|
+|-- api/                        # FastAPI backend
+|   `-- main.py                 # REST + WebSocket + /slack/actions callback
+|
+|-- frontend/                   # React + Vite dashboard
+|   `-- src/App.jsx             # Live pipeline log, HITL queue, eval metrics
+|
+|-- infra/                      # Infrastructure
+|   |-- Dockerfile
+|   `-- docker-compose.yml
+|
+|-- .github/workflows/
+|   `-- ci.yml                  # Tests + lint + Docker build on each push
+|
+|-- docs/                       # Architecture Decision Records
+|   |-- ADR-001-langgraph.md
+|   |-- ADR-002-models.md
+|   |-- ADR-003-contextual-retrieval.md
+|   |-- ADR-004-hitl.md
+|   `-- ADR-005-evaluation.md
+|
+|-- tests/                      # 71 tests -- schemas, routing, tools, HITL, API, integration
+|   |-- test_schemas.py
+|   |-- test_state.py
+|   |-- test_tools_mock.py
+|   |-- test_hitl.py
+|   `-- test_data_collector.py
+|
+|-- demo.py                     # Single-command demo script
+|-- run_incident.py             # End-to-end test script
+|-- pyproject.toml
+|-- .env.example
+`-- README.md
 ```
 
 ---
 
-## 8. Instalación y configuración
+## 8. Setup
 
-### Requisitos
+### Requirements
 
 - Python 3.11+
-- Docker Desktop (para ejecución containerizada)
+- Docker Desktop (for containerized execution)
+- Node.js 18+ (for frontend dashboard)
 
-### Setup
+### Installation
 
 ```bash
-# 1. Clonar el repositorio
+# 1. Clone the repository
 git clone https://github.com/Dafomu96/ai-incident-response.git
 cd ai-incident-response
 
-# 2. Entorno virtual e instalación
+# 2. Virtual environment and dependencies
 python -m venv .venv
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -e ".[dev]"
 pip install langchain-text-splitters python-multipart
 
-# 3. Variables de entorno
+# 3. Environment variables
 cp .env.example .env
-# Editar .env — mínimo: GROQ_API_KEY
+# Edit .env -- minimum: GROQ_API_KEY
 
-# 4. Ingestar runbooks en ChromaDB
+# 4. Seed runbooks into ChromaDB
 python -m rag.seed_runbooks
 
-# 5. Test end-to-end
-python run_incident.py
+# 5. Run the demo
+python demo.py
 ```
 
-### Variables mínimas para desarrollo
+### Minimum environment variables for development
 
 ```bash
-GROQ_API_KEY=gsk_...              # Obligatoria — todos los agentes
-LANGSMITH_API_KEY=lsv2_pt_...     # Recomendada — observabilidad
+GROQ_API_KEY=gsk_...              # Required -- all agents
+LANGSMITH_API_KEY=lsv2_pt_...     # Recommended -- observability
 LANGCHAIN_TRACING_V2=true
 LANGCHAIN_ENDPOINT=https://eu.api.smith.langchain.com
 LANGCHAIN_PROJECT=ai-incident-response
-SLACK_BOT_TOKEN=xoxb-...          # Opcional — HITL real
+SLACK_BOT_TOKEN=xoxb-...          # Optional -- real HITL
 SLACK_HITL_CHANNEL=#incident-approvals
 ```
 
-> Todos los tools externos (Prometheus, Loki, GitHub, K8s) tienen mocks automáticos cuando la URL/token no está configurada. El sistema es ejecutable end-to-end con solo `GROQ_API_KEY`.
+> All external tools (Prometheus, Loki, GitHub, K8s) have automatic service-specific mocks when URL/token is not configured. The system runs end-to-end with only `GROQ_API_KEY`.
 
 ### Docker
 
 ```bash
 docker-compose -f infra/docker-compose.yml up --build
-# API disponible en http://localhost:8000
+# API available at http://localhost:8000
+```
+
+### Frontend dashboard
+
+```bash
+cd frontend
+npm install
+npm run dev
+# Dashboard at http://localhost:3000
 ```
 
 ---
 
-## 9. Uso y ejemplos
+## 9. Usage
 
-### Test end-to-end
+### Single-command demo
+
+```bash
+python demo.py
+```
+
+Runs the full pipeline with a sample P2 incident, shows all 5 agents executing, sends HITL to Slack if applicable, and displays results with colored output.
+
+### End-to-end test
 
 ```python
 from schemas.incident import IncidentAlert
@@ -432,7 +454,7 @@ alert = IncidentAlert(
     metric="http_request_duration_seconds_p99",
     value=2.34,
     threshold=0.5,
-    description="P99 latency spike — possible DB connection pool exhaustion",
+    description="P99 latency spike -- possible DB connection pool exhaustion",
     labels={"env": "production", "region": "eu-west-1"},
 )
 
@@ -442,57 +464,57 @@ result = graph.invoke(
     config={"configurable": {"thread_id": alert.alert_id}},
 )
 
-print(result["incident_report"].severity)           # P2
-print(result["diagnosis"].top_hypothesis.hypothesis) # causa raíz
+print(result["incident_report"].severity)            # P2
+print(result["diagnosis"].top_hypothesis.hypothesis) # root cause
 print(result["diagnosis"].overall_confidence)        # 0.90
-print(result["remediation_plan"].requires_approval)  # acciones HIGH risk
+print(result["remediation_plan"].requires_approval)  # HIGH risk actions
 ```
 
-### Via API REST
+### REST API
 
 ```bash
-# Lanzar incidente
+# Trigger incident
 curl -X POST http://localhost:8000/incident \
   -H "Content-Type: application/json" \
   -d '{"alert_id": "inc-001", "service": "payment-service",
        "metric": "error_rate", "value": 0.45, "threshold": 0.05,
        "description": "Critical error rate spike"}'
 
-# Consultar estado
+# Get incident status
 curl http://localhost:8000/incident/inc-001
 
 # Health check
 curl http://localhost:8000/health
 ```
 
-### Evaluación
+### Evaluation
 
 ```bash
-# Evaluar incidente específico
+# Evaluate single incident
 python -m evals.run_evals --incident hist-001
 
-# Evaluar todos los incidentes
+# Evaluate all 8 incidents
 python -m evals.run_evals
 
-# Resultados en evals/results_latest.json
+# Results saved to evals/results_latest.json
 ```
 
 ### Tests
 
 ```bash
-pytest tests/ -v           # 52 tests
-pytest tests/ --cov=.      # con cobertura
+pytest tests/ -v           # 71 tests
+pytest tests/ --cov=.      # with coverage
 ```
 
 ---
 
-## 10. Observabilidad
+## 10. Observability
 
 ### LangSmith
 
-Cada ejecución del grafo genera una traza completa con input/output de cada nodo, token usage por agente, latencia, y errores. Configurar `LANGCHAIN_TRACING_V2=true` y `LANGSMITH_API_KEY` para activarlo.
+Every graph execution generates a full trace with input/output per node, token usage per agent, latency, and errors. Set `LANGCHAIN_TRACING_V2=true` and `LANGSMITH_API_KEY` to enable.
 
-M�tricas por traza típica:
+Typical trace metrics:
 
 - Total: ~5.5s, ~5.1K tokens
 - monitor_triage: 0.82s, 643 tokens
@@ -500,61 +522,23 @@ M�tricas por traza típica:
 - remediation_planner: 1.02s, 879 tokens
 - postmortem_writer: 1.51s, 1.3K tokens
 
-### HITL — Slack bot
+### HITL -- Slack bot
 
-Cuando el Agente 4 genera una acción HIGH risk, el bot envía a `#incident-approvals`:
+When Agent 4 generates a HIGH risk action, the bot sends to `#incident-approvals`:
 
-- Descripción de la acción y riesgo
-- Resumen del diagnóstico con confianza
-- Comando exacto a ejecutar
-- Botones **Approve** / **Reject**
-- Auto-escalación en 10 minutos si no hay respuesta
-
----
-
-## 11. Roadmap
-
-### Semana 1 — Esqueleto + Core ✅
-- [x] Estructura del repositorio y schemas Pydantic v2
-- [x] `IncidentState` con TypedDict y `StateGraph` con conditional edges
-- [x] Los 5 agentes con lógica principal
-- [x] Tools con mocks específicos por servicio
-- [x] RAG pipeline (Contextual Retrieval)
-- [x] 52 tests pasando
-
-### Semana 2 — Integraciones reales ✅
-- [x] ChromaDB con 5 runbooks ingestados
-- [x] Test end-to-end con Groq real
-- [x] HITL con Slack bot real — botones Approve/Reject funcionando
-- [x] Loop de aprendizaje: postmortem → ChromaDB verificado
-- [x] FastAPI con endpoints REST y WebSocket
-
-### Semana 3 — Evaluación + CI/CD + Docker ✅
-- [x] LangSmith integrado — trazas completas de cada ejecución
-- [x] Dataset de 8 incidentes históricos con ground truth
-- [x] Runner de evaluaciones con métricas custom
-- [x] GitHub Actions CI/CD
-- [x] Docker funcionando end-to-end
-
-### Semana 4 — Deploy + Documentación (pendiente)
-- [ ] Deploy en AWS ECS Fargate
-- [ ] Frontend React con dashboard de incidentes
-- [ ] ADRs completos en `/docs/`
-- [ ] Demo grabada mostrando incidente end-to-end
+- Action description and risk level
+- Diagnosis summary with confidence score
+- Exact command to execute
+- **Approve** / **Reject** buttons
+- Auto-escalation after 10 minutes with no response
 
 ---
 
-## Lo que dirás en la próxima entrevista
+## Author
 
-> *"Construí un sistema de incident response agéntico con 5 agentes especializados orquestados con LangGraph. El Diagnostic Reasoner usa RAG sobre runbooks internos con Contextual Retrieval de Anthropic, genera hipótesis de causa raíz con structured outputs Pydantic, y tiene trazabilidad completa en LangSmith — cada ejecución muestra el input/output de los 5 agentes, token usage y latencia. Las acciones de alto riesgo pasan por HITL con aprobación via Slack bot real con botones Approve/Reject. Elegí LangGraph sobre crewAI porque los incidentes tienen estado cíclico: necesito poder rediagnosticar si la confianza es baja, y eso requiere loops condicionales que crewAI no soporta nativamente. El sistema tiene 52 tests y corre en Docker. Evaluado sobre 8 incidentes históricos: Top-3 accuracy del 62% con Groq en desarrollo, arquitectura preparada para Claude Sonnet en producción donde esperamos mejora significativa."*
-
----
-
-## Autor
-
-**David Font Muñoz** — AI/ML Engineer  
+**David Font Munoz** -- AI/ML Engineer
 [GitHub](https://github.com/Dafomu96) · [GitLab](https://gitlab.com/Dafomu96) · [LinkedIn](https://linkedin.com/in/davidfontmunoz)
 
 ---
 
-*Proyecto en desarrollo activo — Semanas 1-3 completadas.*
+
