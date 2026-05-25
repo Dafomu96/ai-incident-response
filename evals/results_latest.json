@@ -1,0 +1,33 @@
+{
+  "timestamp": "2026-05-25T08:35:14.977244",
+  "summary": {
+    "total_incidents": 1,
+    "severity_accuracy": 1.0,
+    "top1_accuracy": 1.0,
+    "top3_accuracy": 1.0,
+    "avg_keyword_score": 0.4,
+    "avg_confidence": 0.9,
+    "hitl_rate": 1.0,
+    "postmortem_rate": 1.0,
+    "avg_diagnosis_attempts": 1.0
+  },
+  "individual": [
+    {
+      "alert_id": "hist-001",
+      "severity_correct": true,
+      "top1_correct": true,
+      "top3_correct": true,
+      "keyword_score": 0.4,
+      "overall_confidence": 0.9,
+      "requires_more_data": false,
+      "diagnosis_attempts": 1,
+      "has_remediation": true,
+      "has_postmortem": true,
+      "hitl_triggered": true,
+      "auto_actions": 2,
+      "approval_actions": 1,
+      "elapsed_seconds": 5.39,
+      "error": null
+    }
+  ]
+}

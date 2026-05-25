@@ -1,0 +1,249 @@
+[
+  {
+    "alert_id": "hist-001",
+    "alert": {
+      "alert_id": "hist-001",
+      "service": "payment-service",
+      "metric": "http_request_duration_seconds_p99",
+      "value": 2.34,
+      "threshold": 0.5,
+      "description": "P99 latency spike \u2014 possible DB connection pool exhaustion",
+      "labels": {
+        "env": "production",
+        "region": "eu-west-1"
+      }
+    },
+    "ground_truth": {
+      "severity": "P2",
+      "root_cause": "DB connection pool exhaustion due to slow query after index drop",
+      "root_cause_keywords": [
+        "connection pool",
+        "database",
+        "postgres",
+        "query",
+        "driver"
+      ],
+      "correct_actions": [
+        "kill_blocking_queries",
+        "recreate_index",
+        "restart_service"
+      ]
+    }
+  },
+  {
+    "alert_id": "hist-002",
+    "alert": {
+      "alert_id": "hist-002",
+      "service": "auth-service",
+      "metric": "container_memory_usage_bytes",
+      "value": 0.95,
+      "threshold": 0.85,
+      "description": "Memory usage at 95% \u2014 OOMKilled pods detected in last 30 minutes",
+      "labels": {
+        "env": "production",
+        "region": "eu-west-1"
+      }
+    },
+    "ground_truth": {
+      "severity": "P2",
+      "root_cause": "Memory leak in JWT token cache \u2014 unbounded cache growth after deploy",
+      "root_cause_keywords": [
+        "memory",
+        "leak",
+        "cache",
+        "OOM",
+        "pod"
+      ],
+      "correct_actions": [
+        "restart_service",
+        "rollback_deploy",
+        "increase_memory_limit"
+      ]
+    }
+  },
+  {
+    "alert_id": "hist-003",
+    "alert": {
+      "alert_id": "hist-003",
+      "service": "order-service",
+      "metric": "http_requests_total",
+      "value": 0.0,
+      "threshold": 50.0,
+      "description": "Zero requests processed \u2014 service completely unresponsive",
+      "labels": {
+        "env": "production",
+        "region": "eu-west-1"
+      }
+    },
+    "ground_truth": {
+      "severity": "P1",
+      "root_cause": "Deadlock in database transactions causing complete service outage",
+      "root_cause_keywords": [
+        "deadlock",
+        "database",
+        "transaction",
+        "outage"
+      ],
+      "correct_actions": [
+        "kill_deadlocked_transactions",
+        "restart_service",
+        "rollback_deploy"
+      ]
+    }
+  },
+  {
+    "alert_id": "hist-004",
+    "alert": {
+      "alert_id": "hist-004",
+      "service": "notification-service",
+      "metric": "http_5xx_rate",
+      "value": 0.23,
+      "threshold": 0.05,
+      "description": "High 5xx error rate \u2014 external email provider returning 503",
+      "labels": {
+        "env": "production",
+        "region": "eu-west-1"
+      }
+    },
+    "ground_truth": {
+      "severity": "P2",
+      "root_cause": "External email provider outage causing cascade failures in notification service",
+      "root_cause_keywords": [
+        "external",
+        "provider",
+        "email",
+        "503",
+        "dependency"
+      ],
+      "correct_actions": [
+        "activate_circuit_breaker",
+        "switch_to_backup_provider",
+        "alert_users"
+      ]
+    }
+  },
+  {
+    "alert_id": "hist-005",
+    "alert": {
+      "alert_id": "hist-005",
+      "service": "api-gateway",
+      "metric": "node_filesystem_avail_bytes",
+      "value": 0.04,
+      "threshold": 0.1,
+      "description": "Disk space at 4% \u2014 logs filling up the volume",
+      "labels": {
+        "env": "production",
+        "region": "eu-west-1"
+      }
+    },
+    "ground_truth": {
+      "severity": "P3",
+      "root_cause": "Log rotation not configured \u2014 access logs filling disk over 72 hours",
+      "root_cause_keywords": [
+        "disk",
+        "logs",
+        "rotation",
+        "storage",
+        "filesystem"
+      ],
+      "correct_actions": [
+        "rotate_logs",
+        "clean_old_logs",
+        "configure_logrotate"
+      ]
+    }
+  },
+  {
+    "alert_id": "hist-006",
+    "alert": {
+      "alert_id": "hist-006",
+      "service": "inventory-service",
+      "metric": "http_request_duration_seconds_p99",
+      "value": 8.5,
+      "threshold": 1.0,
+      "description": "Extreme latency spike \u2014 8.5s p99, possible N+1 query problem after deploy",
+      "labels": {
+        "env": "production",
+        "region": "eu-west-1"
+      }
+    },
+    "ground_truth": {
+      "severity": "P1",
+      "root_cause": "N+1 query introduced in deploy \u2014 missing eager loading on product relationships",
+      "root_cause_keywords": [
+        "N+1",
+        "query",
+        "latency",
+        "deploy",
+        "database"
+      ],
+      "correct_actions": [
+        "rollback_deploy",
+        "add_eager_loading",
+        "add_query_cache"
+      ]
+    }
+  },
+  {
+    "alert_id": "hist-007",
+    "alert": {
+      "alert_id": "hist-007",
+      "service": "search-service",
+      "metric": "elasticsearch_cluster_health",
+      "value": 2.0,
+      "threshold": 1.0,
+      "description": "Elasticsearch cluster red \u2014 primary shards unassigned after node failure",
+      "labels": {
+        "env": "production",
+        "region": "eu-west-1"
+      }
+    },
+    "ground_truth": {
+      "severity": "P1",
+      "root_cause": "Elasticsearch node failure causing red cluster state with unassigned primary shards",
+      "root_cause_keywords": [
+        "elasticsearch",
+        "cluster",
+        "shard",
+        "node",
+        "failure"
+      ],
+      "correct_actions": [
+        "reroute_shards",
+        "restart_failed_node",
+        "increase_replicas"
+      ]
+    }
+  },
+  {
+    "alert_id": "hist-008",
+    "alert": {
+      "alert_id": "hist-008",
+      "service": "payment-service",
+      "metric": "http_5xx_rate",
+      "value": 0.08,
+      "threshold": 0.05,
+      "description": "Elevated error rate \u2014 SSL certificate expired for payment gateway integration",
+      "labels": {
+        "env": "production",
+        "region": "eu-west-1"
+      }
+    },
+    "ground_truth": {
+      "severity": "P2",
+      "root_cause": "SSL certificate expired for payment gateway \u2014 all payment transactions failing",
+      "root_cause_keywords": [
+        "SSL",
+        "certificate",
+        "expired",
+        "payment",
+        "gateway"
+      ],
+      "correct_actions": [
+        "renew_certificate",
+        "update_certificate",
+        "restart_service"
+      ]
+    }
+  }
+]

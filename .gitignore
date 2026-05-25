@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# Secrets
+.env
+*.key
+*.pem
+
+# ChromaDB
+chroma_db/
+
+# LangSmith / testing artifacts
+.langsmith/
+*.log
+
+# Node (frontend)
+node_modules/
+frontend/dist/
+
+# Docker
+*.override.yml
+
+# IDE
+.vscode/
+.idea/
