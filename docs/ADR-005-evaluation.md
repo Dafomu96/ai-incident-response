@@ -1,40 +1,40 @@
-# ADR-005 — Evaluación custom con LangSmith sobre RAGAS
+# ADR-005 — Custom evaluation with LangSmith over RAGAS
 
-**Estado:** Aceptado  
-**Fecha:** Mayo 2026  
-**Autores:** David Font Muñoz
-
----
-
-## Contexto
-
-Evaluar un sistema RAG agéntico requiere medir dos cosas distintas: la calidad del retrieval (¿se recuperan los chunks correctos?) y la calidad del output final (¿el diagnóstico es correcto?). RAGAS es el framework estándar del ecosistema LangChain para esto.
-
-Durante el diseño del sistema de evaluación se valoraron RAGAS y una implementación custom con LangSmith.
+**Status:** Accepted
+**Date:** May 2026
+**Author:** David Font Munoz
 
 ---
 
-## El problema con RAGAS en este contexto
+## Context
 
-RAGAS tiene tres problemas concretos para este proyecto:
+Evaluating an agentic RAG system requires measuring two distinct things: retrieval quality (are the right chunks being retrieved?) and final output quality (is the diagnosis correct?). RAGAS is the standard framework in the LangChain ecosystem for this.
 
-**Conflicto de dependencias.** RAGAS requiere versiones específicas de `datasets` y `langchain` que son incompatibles con LangGraph 0.2+ en Python 3.11. El conflicto se manifiesta en tiempo de instalación y no tiene solución limpia sin degradar alguna de las dos librerías. En un sistema de producción, forzar versiones incompatibles para satisfacer una librería de evaluación es inaceptable.
-
-**Coste por evaluación.** Las métricas principales de RAGAS (faithfulness, answer relevancy, context precision) requieren llamadas adicionales a un LLM por cada evaluación. Evaluar 8 incidentes con RAGAS generaría ~40-60 llamadas adicionales al LLM además de las del pipeline principal. Con un límite de 100k tokens/día en el free tier de Groq, esto consume un porcentaje significativo del presupuesto diario.
-
-**Métricas abstractas vs métricas de negocio.** Faithfulness mide si el output del LLM está soportado por el contexto recuperado. Context precision mide si los chunks recuperados son relevantes para la query. Estas métricas son útiles para sistemas RAG de Q&A general, pero para un sistema de incident response la métrica que importa es: **¿el sistema diagnosticó correctamente la causa raíz?** Esta pregunta solo se puede responder con ground truth real, no con métricas proxy.
+During the evaluation system design, RAGAS and a custom LangSmith implementation were assessed.
 
 ---
 
-## Decisión
+## The problem with RAGAS in this context
 
-**Evaluación directa contra ground truth histórico con LangSmith y métricas custom.**
+RAGAS has three concrete problems for this project:
+
+**Dependency conflicts.** RAGAS requires specific versions of `datasets` and `langchain` that are incompatible with LangGraph 0.2+ in Python 3.11. The conflict manifests at installation time and has no clean solution without degrading one of the two libraries. In a production system, forcing incompatible versions to satisfy an evaluation library is unacceptable.
+
+**Cost per evaluation.** RAGAS's main metrics (faithfulness, answer relevancy, context precision) require additional LLM calls per evaluation. Evaluating 8 incidents with RAGAS would generate ~40-60 additional LLM calls on top of the main pipeline calls. With a 100k tokens/day limit on Groq's free tier, this consumes a significant portion of the daily budget.
+
+**Abstract metrics vs business metrics.** Faithfulness measures whether the LLM output is supported by the retrieved context. Context precision measures whether retrieved chunks are relevant to the query. These metrics are useful for general Q&A RAG systems, but for an incident response system the metric that matters is: **did the system correctly diagnose the root cause?** This question can only be answered with real ground truth, not with proxy metrics.
 
 ---
 
-## Dataset de ground truth
+## Decision
 
-`evals/datasets/historical_incidents.json` contiene 8 incidentes reales con:
+**Direct evaluation against historical ground truth with LangSmith and custom metrics.**
+
+---
+
+## Ground truth dataset
+
+`evals/datasets/historical_incidents.json` contains 8 real incidents with:
 
 ```json
 {
@@ -49,13 +49,13 @@ RAGAS tiene tres problemas concretos para este proyecto:
 }
 ```
 
-El ground truth incluye la causa raíz textual, keywords que deben aparecer en el diagnóstico, y las acciones de remediación correctas.
+The ground truth includes the textual root cause, keywords that should appear in the diagnosis, and the correct remediation actions.
 
 ---
 
-## Métricas implementadas
+## Implemented metrics
 
-**Keyword overlap score.** Mide qué fracción de las keywords del ground truth aparecen en la hipótesis top-1 del Agente 3. Simple, determinista, sin llamadas adicionales al LLM.
+**Keyword overlap score.** Measures what fraction of the ground truth keywords appear in Agent 3's top-1 hypothesis. Simple, deterministic, no additional LLM calls.
 
 ```python
 def keyword_overlap_score(hypothesis: str, keywords: list[str]) -> float:
@@ -64,21 +64,21 @@ def keyword_overlap_score(hypothesis: str, keywords: list[str]) -> float:
     return matches / len(keywords)
 ```
 
-**Top-1 accuracy.** La hipótesis más probable del Agente 3 supera el umbral de keyword overlap (0.25).
+**Top-1 accuracy.** Agent 3's most probable hypothesis exceeds the keyword overlap threshold (0.25).
 
-**Top-3 accuracy.** Al menos una de las 3 primeras hipótesis supera el umbral. Más permisiva — mide si el sistema considera la causa raíz correcta aunque no sea la primera.
+**Top-3 accuracy.** At least one of the 3 first hypotheses exceeds the threshold. More permissive -- measures whether the system considers the correct root cause even if it is not ranked first.
 
-**Severity accuracy.** La severidad clasificada por el Agente 1 coincide con el ground truth.
+**Severity accuracy.** The severity classified by Agent 1 matches the ground truth.
 
-**Métricas de sistema.** HITL trigger rate (qué porcentaje de incidentes generan una aprobación humana), postmortem rate (siempre 100% si el pipeline completa), avg diagnosis attempts (indica si el loop de rediagnóstico se activa).
+**System metrics.** HITL trigger rate (what percentage of incidents generate a human approval), postmortem rate (always 100% if the pipeline completes), avg diagnosis attempts (indicates whether the re-diagnosis loop activates).
 
 ---
 
-## Resultados actuales
+## Current results
 
-Evaluación sobre 8 incidentes con Groq Llama 3.3 70B (modelo de desarrollo):
+Evaluation over 8 incidents with Groq Llama 3.3 70B (development model):
 
-| Métrica | Resultado |
+| Metric | Result |
 |---|---|
 | Severity accuracy | 62% |
 | Top-1 accuracy | 38% |
@@ -87,35 +87,35 @@ Evaluación sobre 8 incidentes con Groq Llama 3.3 70B (modelo de desarrollo):
 | HITL trigger rate | 100% |
 | Postmortem rate | 100% |
 
-**Análisis honesto de los resultados:** el modelo de desarrollo (Groq Llama 3.3 70B) tiene un sesgo conocido hacia "postgres driver update" como causa raíz en incidentes con señales ambiguas, porque los datos mock de GitHub siempre incluyen un commit de postgres driver. En incidentes con señales claras y específicas (N+1 query en inventory-service, Elasticsearch node failure en search-service) el Top-1 es correcto. Con Claude Sonnet en producción y datos reales de cada servicio se esperan mejoras significativas en los casos edge.
+**Honest analysis of results:** the development model (Groq Llama 3.3 70B) has a known bias toward "postgres driver update" as root cause in incidents with ambiguous signals, because the GitHub mock data always includes a postgres driver commit. In incidents with clear and specific signals (N+1 query in inventory-service, Elasticsearch node failure in search-service) Top-1 is correct. With Claude Sonnet in production and real per-service data, significant improvements are expected in edge cases.
 
 ---
 
-## LangSmith como plataforma de observabilidad
+## LangSmith as observability platform
 
-Todas las ejecuciones de evaluación se trazan en LangSmith con:
+All evaluation executions are traced in LangSmith with:
 
-- Input completo de cada nodo (alert, logs, métricas, commits)
-- Output de cada agente (IncidentReport, DiagnosisResult, RemediationPlan, PostmortemDraft)
-- Token usage y latencia por agente
-- Comparación entre ejecuciones para detectar regresiones
+- Full input of each node (alert, logs, metrics, commits)
+- Output of each agent (IncidentReport, DiagnosisResult, RemediationPlan, PostmortemDraft)
+- Token usage and latency per agent
+- Comparison between executions to detect regressions
 
-Esto permite hacer A/B testing entre versiones del Diagnostic Reasoner — cambiar el prompt, el modelo, o la estrategia de retrieval y comparar resultados en el mismo dataset de ground truth.
-
----
-
-## Alternativas descartadas
-
-**RAGAS.** Descartado por los tres problemas descritos arriba: conflicto de dependencias, coste por evaluación, y métricas abstractas que no responden la pregunta de negocio.
-
-**Evaluación manual.** Leer los outputs del Agente 3 y juzgar si son correctos. No escalable, no reproducible, no automatizable en CI/CD.
-
-**LLM-as-judge.** Usar un LLM para evaluar si el diagnóstico es correcto comparándolo con el ground truth. Añade coste y no-determinismo. Apropiado cuando no hay ground truth estructurado — en este caso sí lo hay.
+This enables A/B testing between versions of the Diagnostic Reasoner -- changing the prompt, model, or retrieval strategy and comparing results on the same ground truth dataset.
 
 ---
 
-## Trade-offs asumidos
+## Discarded alternatives
 
-**Keyword overlap es una métrica imperfecta.** Un diagnóstico correcto formulado con sinónimos puede puntuar 0%. Un diagnóstico incorrecto que menciona casualmente las keywords puede puntuar alto. Para mitigar esto se usa Top-3 accuracy además de Top-1, y el threshold se calibró empíricamente (0.25) para minimizar falsos negativos.
+**RAGAS.** Discarded due to the three problems described above: dependency conflicts, cost per evaluation, and abstract metrics that do not answer the business question.
 
-**El dataset de 8 incidentes es pequeño.** No es estadísticamente representativo. El objetivo es tener un baseline reproducible para detectar regresiones entre versiones, no medir la precisión absoluta del sistema. Para un dataset de evaluación robusto en producción se necesitarían 50-100 incidentes históricos reales.
+**Manual evaluation.** Reading Agent 3 outputs and judging whether they are correct. Not scalable, not reproducible, not automatable in CI/CD.
+
+**LLM-as-judge.** Using an LLM to evaluate whether the diagnosis is correct by comparing it with the ground truth. Adds cost and non-determinism. Appropriate when there is no structured ground truth -- in this case there is.
+
+---
+
+## Trade-offs accepted
+
+**Keyword overlap is an imperfect metric.** A correct diagnosis phrased with synonyms may score 0%. An incorrect diagnosis that casually mentions the keywords may score high. To mitigate this, Top-3 accuracy is used alongside Top-1, and the threshold was calibrated empirically (0.25) to minimize false negatives.
+
+**The 8-incident dataset is small.** It is not statistically representative. The objective is to have a reproducible baseline for detecting regressions between versions, not to measure the system's absolute precision. For a robust production evaluation dataset, 50-100 real historical incidents would be needed.

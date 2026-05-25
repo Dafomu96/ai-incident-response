@@ -1,83 +1,83 @@
-# ADR-002 — Selección de modelos LLM por tipo de tarea
+# ADR-002 — LLM model selection by task type
 
-**Estado:** Aceptado  
-**Fecha:** Mayo 2026  
-**Autores:** David Font Muñoz
-
----
-
-## Contexto
-
-El sistema tiene 5 agentes con necesidades muy distintas en términos de latencia, capacidad de razonamiento y coste. La decisión más simple sería usar un único modelo para todos los agentes, pero esto implica un trade-off negativo en alguna de las tres dimensiones para cada agente.
-
-Las restricciones del sistema son:
-
-- **Agente 1 (Triage):** debe clasificar la severidad en menos de 500ms. Es el entry point del sistema y cualquier latencia aquí se percibe directamente como tiempo de respuesta del sistema.
-- **Agentes 3, 4, 5:** necesitan razonamiento profundo, chain-of-thought fiable, y structured outputs que pasen validación estricta de Pydantic v2 en el primer intento.
-- **RAG contextualización:** se genera un contexto de 50-100 tokens por cada chunk en ingesta. Con documentos de varios miles de tokens y chunks de 512 tokens, una sola ingesta puede requerir decenas de llamadas. El coste se acumula rápidamente.
-- **Resiliencia:** el sistema no puede depender de un único proveedor de LLM.
+**Status:** Accepted
+**Date:** May 2026
+**Author:** David Font Munoz
 
 ---
 
-## Decisión
+## Context
 
-**Tres modelos distintos según el tipo de tarea, con fallback global.**
+The system has 5 agents with very different requirements in terms of latency, reasoning capability and cost. The simplest decision would be to use a single model for all agents, but this implies a negative trade-off on at least one of the three dimensions for each agent.
 
-| Agente | Modelo (desarrollo) | Modelo (producción) | Criterio |
+System constraints:
+
+- **Agent 1 (Triage):** must classify severity in under 500ms. It is the system entry point and any latency here is directly perceived as system response time.
+- **Agents 3, 4, 5:** need deep reasoning, reliable chain-of-thought, and structured outputs that pass strict Pydantic v2 validation on the first attempt.
+- **RAG contextualization:** generates 50-100 tokens of context per chunk at ingestion time. With documents of several thousand tokens and 512-token chunks, a single ingestion can require dozens of calls. Cost accumulates quickly.
+- **Resilience:** the system cannot depend on a single LLM provider.
+
+---
+
+## Decision
+
+**Three different models per task type, with global fallback.**
+
+| Agent | Model (development) | Model (production) | Criterion |
 |---|---|---|---|
-| Agente 1 — Triage | Groq Llama 3.3 70B | Groq Llama 3.3 70B | Latencia <500ms |
-| Agentes 3/4/5 | Groq Llama 3.3 70B | Claude Sonnet | Razonamiento profundo |
-| RAG contextualización | Groq Llama 3.3 70B | Claude Haiku | Coste mínimo por chunk |
-| Fallback global | GPT-4o | GPT-4o | Resiliencia |
+| Agent 1 -- Triage | Groq Llama 3.3 70B | Groq Llama 3.3 70B | Latency <500ms |
+| Agents 3/4/5 | Groq Llama 3.3 70B | Claude Sonnet | Deep reasoning |
+| RAG contextualization | Groq Llama 3.3 70B | Claude Haiku | Minimum cost per chunk |
+| Global fallback | GPT-4o | GPT-4o | Resilience |
 
 ---
 
-## Razones por modelo
+## Reasoning per model
 
-### Groq Llama 3.3 70B — Agente 1 (siempre)
+### Groq Llama 3.3 70B -- Agent 1 (always)
 
-El Agente 1 realiza una clasificación binaria con criterios explícitos (P1/P2/P3) sobre un input estructurado. No necesita razonamiento profundo — necesita velocidad. Groq con Llama 3.3 70B responde en ~300ms gracias a su hardware especializado (LPU), muy por debajo del objetivo de 500ms. Claude Sonnet tiene una latencia media de 1-3 segundos en respuestas estructuradas, inaceptable para el entry point de un sistema de incident response donde cada segundo cuenta.
+Agent 1 performs a classification with explicit criteria (P1/P2/P3) over a structured input. It does not need deep reasoning -- it needs speed. Groq with Llama 3.3 70B responds in ~300ms thanks to its specialized hardware (LPU), well below the 500ms target. Claude Sonnet has a median latency of 1-3 seconds for structured responses, unacceptable for the entry point of an incident response system where every second counts.
 
-### Claude Sonnet — Agentes 3, 4, 5 (producción)
+### Claude Sonnet -- Agents 3, 4, 5 (production)
 
-El Agente 3 (Diagnostic Reasoner) es el core del sistema. Debe correlacionar logs, métricas, commits y estado de pods, consultarlos contra runbooks históricos via RAG, y generar hipótesis ordenadas por probabilidad con evidencias. Este es exactamente el tipo de tarea donde Claude Sonnet supera a modelos más pequeños: razonamiento multi-paso, chain-of-thought coherente, y fidelidad en structured outputs complejos.
+Agent 3 (Diagnostic Reasoner) is the core of the system. It must correlate logs, metrics, commits and pod status, query them against historical runbooks via RAG, and generate hypotheses ordered by probability with evidence. This is exactly the type of task where Claude Sonnet outperforms smaller models: multi-step reasoning, coherent chain-of-thought, and fidelity in complex structured outputs.
 
-En evaluaciones internas, Llama 3.3 70B tiende a anclar el diagnóstico en la señal más obvia de los datos (el commit de postgres driver en el mock) ignorando señales secundarias. Claude Sonnet integra mejor evidencias contradictorias y produce hipótesis más matizadas.
+In internal evaluations, Llama 3.3 70B tends to anchor the diagnosis on the most obvious signal in the data, ignoring secondary signals. Claude Sonnet better integrates contradictory evidence and produces more nuanced hypotheses.
 
-Los structured outputs con Pydantic v2 son más fiables con Claude Sonnet — menos errores de parsing que requieren retry, lo que reduce la latencia total del pipeline.
+Structured outputs with Pydantic v2 are more reliable with Claude Sonnet -- fewer parsing errors requiring retry, which reduces total pipeline latency.
 
-### Claude Haiku — RAG contextualización (producción)
+### Claude Haiku -- RAG contextualization (production)
 
-La contextualización de chunks (Contextual Retrieval) requiere una llamada por chunk para generar 50-100 tokens de contexto. Esta tarea es simple: "describe qué parte del documento es este chunk". No necesita razonamiento profundo. Claude Haiku a un coste ~20x menor que Sonnet es la elección obvia. El ahorro es significativo en ingesta de bases de conocimiento grandes.
+Chunk contextualization (Contextual Retrieval) requires one call per chunk to generate 50-100 tokens of context. This task is simple: "describe what part of the document this chunk is". No deep reasoning needed. Claude Haiku at ~20x lower cost than Sonnet is the obvious choice. The savings are significant when ingesting large knowledge bases.
 
-### GPT-4o — Fallback global
+### GPT-4o -- Global fallback
 
-Si la API de Anthropic no está disponible, el sistema cae automáticamente a GPT-4o mediante retry logic con tenacity. Esto garantiza continuidad del servicio en incidentes P1 donde no se puede esperar a que se restaure un proveedor.
-
----
-
-## Desarrollo vs producción
-
-Durante el desarrollo, todos los agentes usan Groq Llama 3.3 70B por coste cero en el free tier. Esto introduce un sesgo conocido en las evaluaciones — el modelo tiende a diagnosticar "postgres driver update" independientemente del tipo de incidente cuando las señales son ambiguas.
-
-Los resultados de evaluación con Groq (Top-3 accuracy: 62%) son el baseline de desarrollo. Con Claude Sonnet en producción se esperan mejoras significativas en los casos donde la causa raíz requiere integrar señales de múltiples fuentes sin una señal dominante clara.
-
-Esta distinción dev/prod es deliberada y documentada — no es una limitación oculta del sistema.
+If the Anthropic API is unavailable, the system automatically falls back to GPT-4o via retry logic with tenacity. This ensures service continuity during P1 incidents where waiting for a provider to recover is not an option.
 
 ---
 
-## Alternativas descartadas
+## Development vs production
 
-**Un único modelo para todo.** Si se elige Claude Sonnet para todo, el Agente 1 tiene latencia >1s — inaceptable. Si se elige Groq para todo, los Agentes 3/4/5 tienen peor precisión diagnóstica en casos complejos. La selección por tarea es el único enfoque que optimiza las tres dimensiones simultáneamente.
+During development, all agents use Groq Llama 3.3 70B at zero cost on the free tier. This introduces a known bias in evaluations -- the model tends to diagnose "postgres driver update" regardless of incident type when signals are ambiguous.
 
-**Mixtral 8x7B.** Evaluado como alternativa a Llama 3.3 70B para el Agente 1. Latencia similar pero peor calidad de structured outputs. Descartado.
+Evaluation results with Groq (Top-3 accuracy: 62%) are the development baseline. With Claude Sonnet in production, significant improvements are expected in cases where the root cause requires integrating signals from multiple sources without a dominant clear signal.
 
-**GPT-4o como modelo principal.** Latencia y coste superiores a Claude Sonnet sin ventaja clara en las tareas específicas del sistema. Mantenido como fallback por su disponibilidad y fiabilidad.
+This dev/prod distinction is deliberate and documented -- it is not a hidden limitation of the system.
 
 ---
 
-## Trade-offs asumidos
+## Discarded alternatives
 
-**Complejidad operacional.** Múltiples API keys, múltiples configuraciones, múltiples puntos de fallo. Compensado por la optimización coste-latencia-calidad por tarea y por la resiliencia del fallback.
+**A single model for everything.** If Claude Sonnet is chosen for all agents, Agent 1 has latency >1s -- unacceptable. If Groq is chosen for everything, Agents 3/4/5 have lower diagnostic precision on complex cases. Task-specific selection is the only approach that optimizes all three dimensions simultaneously.
 
-**Inconsistencia dev/prod.** Los resultados de evaluación en desarrollo no son directamente comparables con los de producción. Documentado explícitamente en el README y en las evaluaciones.
+**Mixtral 8x7B.** Evaluated as an alternative to Llama 3.3 70B for Agent 1. Similar latency but worse structured output quality. Discarded.
+
+**GPT-4o as primary model.** Higher latency and cost than Claude Sonnet without a clear advantage in the system's specific tasks. Kept as fallback for availability and reliability.
+
+---
+
+## Trade-offs accepted
+
+**Operational complexity.** Multiple API keys, multiple configurations, multiple failure points. Offset by cost-latency-quality optimization per task and by fallback resilience.
+
+**Dev/prod inconsistency.** Evaluation results in development are not directly comparable with production. Documented explicitly in the README and in the evaluation ADR.

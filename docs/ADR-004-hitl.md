@@ -1,110 +1,110 @@
-# ADR-004 — Human-in-the-Loop por tipo de acción, no por severidad
+# ADR-004 — Human-in-the-Loop by action type, not incident severity
 
-**Estado:** Aceptado  
-**Fecha:** Mayo 2026  
-**Autores:** David Font Muñoz
-
----
-
-## Contexto
-
-El sistema necesita decidir cuándo una acción de remediación requiere aprobación humana antes de ejecutarse. La pregunta de diseño es: ¿cuál es la variable que determina si una acción necesita supervisión humana?
-
-Dos enfoques posibles:
-
-1. **Por severidad del incidente:** P1 y P2 requieren aprobación, P3 no.
-2. **Por riesgo de la acción específica:** acciones reversibles de bajo impacto se ejecutan automáticamente, acciones destructivas o difícilmente reversibles requieren aprobación.
+**Status:** Accepted
+**Date:** May 2026
+**Author:** David Font Munoz
 
 ---
 
-## Decisión
+## Context
 
-**Matriz de permisos por tipo de acción, independientemente de la severidad del incidente.**
+The system needs to decide when a remediation action requires human approval before being executed. The design question is: what is the variable that determines whether an action needs human supervision?
+
+Two possible approaches:
+
+1. **By incident severity:** P1 and P2 require approval, P3 does not.
+2. **By specific action risk:** reversible low-impact actions execute automatically, destructive or hard-to-reverse actions require approval.
+
+---
+
+## Decision
+
+**Permission matrix by action type, independent of incident severity.**
 
 ```
-ActionRisk.LOW  → auto-ejecutable
-ActionRisk.HIGH → HITLRequest → Slack → aprobación humana
+ActionRisk.LOW  --> auto-executable
+ActionRisk.HIGH --> HITLRequest --> Slack --> human approval
 ```
 
 ---
 
-## Razones
+## Reasons
 
-**HITL por severidad es incoherente con el objetivo de automatización.**
+**HITL by severity is incoherent with the automation objective.**
 
-Si un incidente P1 tiene como solución reiniciar un pod (operación reversible en 30 segundos), esperar aprobación humana añade minutos de downtime sin ningún beneficio. El pod se reinicia igualmente — la única diferencia es que el sistema de producción ha estado caído más tiempo.
+If a P1 incident is solved by restarting a pod (reversible operation in 30 seconds), waiting for human approval adds minutes of downtime with no benefit. The pod gets restarted either way -- the only difference is that the production system has been down longer.
 
-Si un incidente P2 tiene como solución un rollback de deployment (operación que puede introducir regresiones y afecta a todos los usuarios), ejecutarlo automáticamente sin aprobación es arriesgado aunque la severidad sea "solo P2".
+If a P2 incident is solved by a deployment rollback (operation that can introduce regressions and affects all users), executing it automatically without approval is risky even though the severity is "only P2".
 
-La severidad describe el impacto del incidente. El riesgo de la acción describe el impacto de la remediación. Son dimensiones ortogonales.
+Severity describes the impact of the incident. Action risk describes the impact of the remediation. They are orthogonal dimensions.
 
-**La variable correcta es la reversibilidad y el blast radius de la acción.**
+**The correct variable is the reversibility and blast radius of the action.**
 
-Acciones `LOW risk` (auto-ejecutables):
-- `kubectl rollout restart deployment/<service>` — reversible, impacto localizado al servicio
-- `kubectl exec -- redis-cli FLUSHDB` — reversible con coste mínimo (regeneración de cache)
-- `kubectl scale deployment/<service> --replicas=N` — reversible inmediatamente
-- `kubectl exec -- logrotate -f` — sin impacto en servicio
+`LOW risk` actions (auto-executable):
+- `kubectl rollout restart deployment/<service>` -- reversible, impact localized to the service
+- `kubectl exec -- redis-cli FLUSHDB` -- reversible at minimal cost (cache regeneration)
+- `kubectl scale deployment/<service> --replicas=N` -- immediately reversible
+- `kubectl exec -- logrotate -f` -- no service impact
 
-Acciones `HIGH risk` (requieren aprobación):
-- `kubectl rollout undo deployment/<service>` — rollback puede introducir regresiones
-- `kubectl delete pvc/<volume>` — pérdida de datos potencial
-- modificar network policies — impacto en seguridad y conectividad de múltiples servicios
-- escalar infraestructura — coste económico inmediato
+`HIGH risk` actions (require approval):
+- `kubectl rollout undo deployment/<service>` -- rollback may introduce regressions
+- `kubectl delete pvc/<volume>` -- potential data loss
+- modifying network policies -- security and connectivity impact across multiple services
+- scaling infrastructure -- immediate financial cost
 
 ---
 
-## Implementación
+## Implementation
 
-El Agente 4 (Remediation Planner) clasifica cada acción al generarla:
+Agent 4 (Remediation Planner) classifies each action when generating it:
 
 ```python
 class ActionRisk(str, Enum):
-    LOW = "low"   # auto-ejecutable
-    HIGH = "high" # requiere aprobación humana
+    LOW = "low"   # auto-executable
+    HIGH = "high" # requires human approval
 ```
 
-Para acciones HIGH, genera un `HITLRequest` con contexto completo:
-- Descripción de la acción y comando exacto a ejecutar
-- Resumen del diagnóstico con confianza del Agente 3
-- Timeout de 10 minutos con escalado automático si no hay respuesta
+For HIGH actions, it generates a `HITLRequest` with full context:
+- Action description and exact command to execute
+- Diagnosis summary with Agent 3's confidence score
+- 10-minute timeout with automatic escalation if no response
 
-El mensaje se envía al canal `#incident-approvals` en Slack con botones **Approve** y **Reject**. El ingeniero de guardia toma la decisión con el contexto completo visible — no necesita buscar información adicional para aprobar o rechazar.
-
----
-
-## Timeout y escalado automático
-
-Si no hay respuesta en 10 minutos (configurable via `HITLRequest.timeout_minutes`), el sistema escala automáticamente. En la implementación actual esto significa continuar con la ejecución — en producción podría significar notificar a un nivel superior de on-call.
-
-El timeout previene que el sistema quede bloqueado indefinidamente esperando una aprobación que no llega (ingeniero dormido, Slack caído, etc.). Un incidente P1 no puede esperar indefinidamente.
+The message is sent to the `#incident-approvals` Slack channel with **Approve** and **Reject** buttons. The on-call engineer makes the decision with full context visible -- no need to look up additional information to approve or reject.
 
 ---
 
-## Log de auditoría
+## Timeout and automatic escalation
 
-Todas las decisiones — aprobadas, rechazadas, y auto-ejecutadas — quedan registradas en el `IncidentState` del grafo y trazadas en LangSmith. Esto permite:
+If there is no response within 10 minutes (configurable via `HITLRequest.timeout_minutes`), the system escalates automatically. In the current implementation this means continuing with execution -- in production it could mean notifying a higher on-call level.
 
-- Post-incident review: qué aprobó quién y cuándo
-- Identificar acciones clasificadas incorrectamente como LOW que deberían ser HIGH
-- Medir el tiempo entre envío del HITLRequest y aprobación (tiempo de respuesta del on-call)
+The timeout prevents the system from being blocked indefinitely waiting for an approval that never comes (engineer asleep, Slack down, etc.). A P1 incident cannot wait indefinitely.
 
 ---
 
-## Alternativas descartadas
+## Audit log
 
-**HITL para todas las acciones.** Elimina el beneficio de automatización. Si cada acción requiere aprobación humana, el sistema es un generador de recomendaciones, no un agente autónomo. El tiempo de resolución sería similar al proceso manual actual.
+All decisions -- approved, rejected, and auto-executed -- are recorded in the graph's `IncidentState` and traced in LangSmith. This enables:
 
-**HITL por severidad (P1/P2 sí, P3 no).** Incoherente — un P3 con acción de rollback es más arriesgado que un P1 con acción de restart. Ver razonamiento principal arriba.
-
-**Sin HITL (fully autonomous).** Inaceptable para acciones con riesgo de pérdida de datos o impacto en seguridad. En producción real, un sistema que ejecuta rollbacks automáticamente sin supervisión humana generaría desconfianza operacional independientemente de su tasa de acierto.
-
-**HITL basado en confianza del diagnóstico.** Si la confianza del Agente 3 es < 80%, requerir aprobación. Descartado porque mezcla la incertidumbre del diagnóstico con el riesgo de la acción — son problemas distintos. Una acción de restart es segura aunque el diagnóstico tenga 60% de confianza. Un rollback es arriesgado aunque el diagnóstico tenga 99% de confianza.
+- Post-incident review: who approved what and when
+- Identifying actions incorrectly classified as LOW that should be HIGH
+- Measuring time between HITLRequest sent and approval (on-call response time)
 
 ---
 
-## Trade-offs asumidos
+## Discarded alternatives
 
-**La clasificación LOW/HIGH del Agente 4 puede ser incorrecta.** El LLM puede clasificar una acción arriesgada como LOW en casos edge. El log de auditoría permite identificar estos casos y mejorar el prompt del Agente 4. El riesgo se mitiga con el principio de que en caso de duda el Agente 4 debe clasificar HIGH.
+**HITL for all actions.** Eliminates the benefit of automation. If every action requires human approval, the system is a recommendation generator, not an autonomous agent. Resolution time would be similar to the current manual process.
 
-**Dependencia de disponibilidad de Slack.** Si Slack no está disponible, el HITL no puede completarse. En producción esto requiere un canal de fallback (PagerDuty, email, SMS). En la implementación actual el timeout garantiza que el sistema no queda bloqueado indefinidamente.
+**HITL by severity (P1/P2 yes, P3 no).** Incoherent -- a P3 with a rollback action is riskier than a P1 with a restart action. See main reasoning above.
+
+**No HITL (fully autonomous).** Unacceptable for actions with data loss risk or security impact. In real production, a system that automatically executes rollbacks without human supervision would generate operational distrust regardless of its accuracy rate.
+
+**HITL based on diagnosis confidence.** If Agent 3's confidence is < 80%, require approval. Discarded because it conflates diagnosis uncertainty with action risk -- they are different problems. A restart action is safe even if the diagnosis has 60% confidence. A rollback is risky even if the diagnosis has 99% confidence.
+
+---
+
+## Trade-offs accepted
+
+**Agent 4's LOW/HIGH classification may be incorrect.** The LLM may classify a risky action as LOW in edge cases. The audit log allows identifying these cases and improving Agent 4's prompt. The risk is mitigated by the principle that when in doubt, Agent 4 should classify HIGH.
+
+**Dependency on Slack availability.** If Slack is unavailable, HITL cannot complete. In production this requires a fallback channel (PagerDuty, email, SMS). In the current implementation the timeout ensures the system is not blocked indefinitely.

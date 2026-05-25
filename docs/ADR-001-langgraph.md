@@ -1,62 +1,62 @@
-# ADR-001 — LangGraph sobre crewAI y AutoGen
+# ADR-001 — LangGraph over crewAI and AutoGen
 
-**Estado:** Aceptado  
-**Fecha:** Mayo 2026  
-**Autores:** David Font Muñoz
-
----
-
-## Contexto
-
-Al diseñar el sistema de incident response necesitábamos un framework de orquestación de agentes. Los tres candidatos evaluados fueron LangGraph, crewAI y AutoGen.
-
-El sistema tiene un requisito fundamental que no es negociable: **el flujo no es lineal**. El Diagnostic Reasoner puede determinar que necesita más datos antes de dar un diagnóstico con suficiente confianza, lo que requiere volver al Data Collector con una ventana temporal ampliada. Esto es un loop condicional — el agente decide en tiempo de ejecución si avanzar o reintentar.
+**Status:** Accepted
+**Date:** May 2026
+**Author:** David Font Munoz
 
 ---
 
-## Decisión
+## Context
+
+When designing the incident response system we needed an agent orchestration framework. The three candidates evaluated were LangGraph, crewAI and AutoGen.
+
+The system has a fundamental non-negotiable requirement: **the flow is not linear**. The Diagnostic Reasoner may determine it needs more data before producing a diagnosis with sufficient confidence, which requires returning to the Data Collector with an expanded time window. This is a conditional loop — the agent decides at runtime whether to advance or retry.
+
+---
+
+## Decision
 
 **LangGraph.**
 
 ---
 
-## Razones
+## Reasons
 
-**crewAI** está optimizado para pipelines lineales con roles fijos: agente A pasa a agente B pasa a agente C. Internamente crewAI orquesta conversaciones entre agentes con roles predefinidos. No soporta loops condicionales de forma nativa — implementar "volver al Agente 2 si la confianza es baja" requeriría lógica custom que va contra el modelo mental del framework.
+**crewAI** is optimized for linear pipelines with fixed roles: agent A passes to agent B passes to agent C. Internally crewAI orchestrates conversations between agents with predefined roles. It does not natively support conditional loops — implementing "return to Agent 2 if confidence is low" would require custom logic that goes against the framework's mental model.
 
-**AutoGen** tiene un modelo de conversación entre agentes (los agentes se "hablan" entre ellos) que introduce latencia innecesaria y complejidad conversacional para un sistema que necesita respuesta determinista en segundos. AutoGen está diseñado para tareas de razonamiento colaborativo, no para pipelines de incident response donde cada nodo tiene una responsabilidad clara y un output tipado.
+**AutoGen** has an agent-to-agent conversation model (agents "talk" to each other) that introduces unnecessary latency and conversational complexity for a system that needs deterministic responses in seconds. AutoGen is designed for collaborative reasoning tasks, not for incident response pipelines where each node has a clear responsibility and a typed output.
 
-**LangGraph** permite exactamente el patrón que necesita este sistema:
+**LangGraph** provides exactly the pattern this system needs:
 
-- **Grafo cíclico:** el edge condicional `route_after_diagnosis` puede devolver `data_collector` si `diagnosis.requires_more_data = True`, creando el loop de rediagnóstico de forma nativa
-- **Estado tipado:** `IncidentState` (TypedDict) persiste en cada nodo y es accesible por todos los agentes sin pasar datos manualmente entre ellos
-- **Checkpointing:** si el sistema cae a mitad de un incidente P1, el grafo retoma exactamente donde lo dejó gracias a `MemorySaver` (dev) o `SqliteSaver` (prod)
-- **Edges condicionales explícitos:** `route_after_triage`, `route_after_diagnosis`, `route_after_planning` son funciones Python puras — completamente testeables con pytest sin necesidad de mocks de LLM
-- **Nodo de error dedicado:** captura excepciones en cualquier punto del grafo sin dejar el estado inconsistente
+- **Cyclic graph:** the conditional edge `route_after_diagnosis` can return `data_collector` if `diagnosis.requires_more_data = True`, creating the re-diagnosis loop natively
+- **Typed state:** `IncidentState` (TypedDict) persists at each node and is accessible by all agents without manually passing data between them
+- **Checkpointing:** if the system crashes mid P1 incident, the graph resumes exactly where it left off using `MemorySaver` (dev) or `SqliteSaver` (prod)
+- **Explicit conditional edges:** `route_after_triage`, `route_after_diagnosis`, `route_after_planning` are pure Python functions — fully testable with pytest without LLM mocks
+- **Dedicated error node:** captures exceptions at any point in the graph without leaving the state inconsistent
 
 ---
 
-## Alternativas descartadas
+## Discarded alternatives
 
-| Framework | Razón de descarte |
+| Framework | Reason for rejection |
 |---|---|
-| crewAI | No soporta loops condicionales nativamente — pipeline lineal únicamente |
-| AutoGen | Modelo conversacional introduce latencia y no-determinismo innecesarios |
-| LangChain LCEL | Sin estado persistente entre nodos, sin checkpointing |
-| Implementación custom | Reinventar checkpointing y estado distribuido es trabajo no diferenciador |
+| crewAI | Does not natively support conditional loops -- linear pipeline only |
+| AutoGen | Conversational model introduces unnecessary latency and non-determinism |
+| LangChain LCEL | No persistent state between nodes, no checkpointing |
+| Custom implementation | Reinventing checkpointing and distributed state is non-differentiating work |
 
 ---
 
-## Trade-offs asumidos
+## Trade-offs accepted
 
-**Verbosidad.** LangGraph requiere definir explícitamente nodos, edges, y estado. El mismo pipeline en crewAI sería 30% menos código. Este coste es aceptable porque la verbosidad hace el flujo completamente auditable — cualquier ingeniería puede leer `workflow.py` y entender exactamente qué hace el sistema.
+**Verbosity.** LangGraph requires explicitly defining nodes, edges, and state. The same pipeline in crewAI would be ~30% less code. This cost is acceptable because the verbosity makes the flow fully auditable -- any engineer can read `workflow.py` and understand exactly what the system does.
 
-**Curva de aprendizaje.** LangGraph tiene conceptos más avanzados (StateGraph, conditional edges, interrupt) que crewAI. Para un equipo nuevo al framework, crewAI sería más rápido de onboardear. En el contexto de este proyecto, el control granular compensa este coste.
+**Learning curve.** LangGraph has more advanced concepts (StateGraph, conditional edges, interrupt) than crewAI. For a team new to the framework, crewAI would be faster to onboard. In the context of this project, granular flow control justifies this cost.
 
 ---
 
-## Consecuencias
+## Consequences
 
-- Los 3 edges condicionales del grafo son funciones Python puras testeadas en `tests/test_state.py`
-- El checkpointing permite recuperación ante fallos en incidentes P1 sin perder contexto
-- El loop de rediagnóstico (Agente 3 → Agente 2 → Agente 3) funciona de forma nativa sin lógica custom
+- The 3 conditional edges in the graph are pure Python functions tested in `tests/test_state.py`
+- Checkpointing enables fault recovery in P1 incidents without losing context
+- The re-diagnosis loop (Agent 3 -> Agent 2 -> Agent 3) works natively without custom logic
