@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 
-const API = "";
+const API = import.meta.env.VITE_API_URL || "";
 
 const css = `
   @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=DM+Sans:wght@300;400;500;600&display=swap');
