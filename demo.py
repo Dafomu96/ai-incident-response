@@ -1,27 +1,28 @@
 """
-demo.py — Demo del sistema completo en un solo comando.
+demo.py -- Full system demo in a single command.
 
-Uso:
+Usage:
   python demo.py
 
-Muestra:
-  1. Ingesta de runbooks en ChromaDB (si no están ya)
-  2. Ejecución end-to-end de un incidente P1
-  3. Mensaje HITL en Slack con botones Approve/Reject
-  4. Resultados de evaluación del último run
+Shows:
+  1. Runbook ingestion into ChromaDB (if not already seeded)
+  2. End-to-end incident pipeline execution
+  3. HITL message in Slack with Approve/Reject buttons
+  4. Results from all 5 agents
 
-Pensado para demos en entrevistas — output limpio y legible.
+Designed for live demos -- clean and readable output.
 """
 import os
 import sys
 import time
+import warnings
 from dotenv import load_dotenv
-load_dotenv()
-import warnings, os
+
 warnings.filterwarnings("ignore")
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
+load_dotenv()
 
-# ── Colores para terminal ──────────────────────────────────────────────────────
+# ── Terminal colors ────────────────────────────────────────────────────────────
 class C:
     HEADER  = "\033[95m"
     BLUE    = "\033[94m"
@@ -54,40 +55,40 @@ def result(key, value):
 
 
 def check_env():
-    """Verifica que las variables de entorno necesarias están configuradas."""
+    """Verify required environment variables are configured."""
     required = ["GROQ_API_KEY"]
     missing = [k for k in required if not os.getenv(k)]
     if missing:
-        print(f"{C.RED}❌ Faltan variables de entorno: {', '.join(missing)}{C.END}")
-        print(f"   Copia .env.example a .env y configura las keys.")
+        print(f"{C.RED}❌ Missing environment variables: {', '.join(missing)}{C.END}")
+        print(f"   Copy .env.example to .env and configure the keys.")
         sys.exit(1)
 
     optional = {
         "LANGSMITH_API_KEY": "LangSmith tracing",
-        "SLACK_BOT_TOKEN": "HITL Slack real",
+        "SLACK_BOT_TOKEN": "Slack HITL",
     }
     for key, feature in optional.items():
         if os.getenv(key):
-            ok(f"{feature} configurado")
+            ok(f"{feature} configured")
         else:
-            warn(f"{feature} no configurado — modo mock")
+            warn(f"{feature} not configured -- mock mode")
 
 
 def seed_if_needed():
-    """Ingesta runbooks solo si ChromaDB está vacío."""
+    """Seed runbooks only if ChromaDB is empty."""
     from rag.chroma_store import get_collection
     collection = get_collection("runbooks")
     count = collection.count()
     if count == 0:
-        info("ChromaDB vacío — ingestando 5 runbooks de ejemplo...")
+        info("ChromaDB empty -- seeding 5 example runbooks...")
         from rag.seed_runbooks import main as seed
         seed()
     else:
-        ok(f"ChromaDB listo — {count} documentos en knowledge base")
+        ok(f"ChromaDB ready -- {count} documents in knowledge base")
 
 
 def run_demo_incident():
-    """Ejecuta el incidente de demo y retorna el resultado."""
+    """Run the demo incident and return the result."""
     from schemas.incident import IncidentAlert
     from graph.workflow import compile_graph
 
@@ -101,8 +102,8 @@ def run_demo_incident():
         labels={"env": "production", "region": "eu-west-1"},
     )
 
-    info(f"Alerta: {alert.service} — {alert.metric} = {alert.value}s (umbral: {alert.threshold}s)")
-    info(f"Descripción: {alert.description}")
+    info(f"Alert: {alert.service} — {alert.metric} = {alert.value}s (threshold: {alert.threshold}s)")
+    info(f"Description: {alert.description}")
 
     graph = compile_graph()
     start = time.time()
@@ -122,29 +123,29 @@ def run_demo_incident():
 
 
 def print_results(result_data, elapsed):
-    """Muestra los resultados de forma legible."""
+    """Display results in a readable format."""
 
     if result_data.get("incident_report"):
         r = result_data["incident_report"]
-        print(f"\n{C.BOLD}{C.BLUE}  AGENTE 1 — Monitor & Triage{C.END}")
-        result("  Severidad", f"{C.YELLOW}{r.severity}{C.END}")
-        result("  Escalar", "Sí" if r.escalate_to_full_graph else "No")
-        result("  Razonamiento", r.classification_reasoning[:80] + "...")
+        print(f"\n{C.BOLD}{C.BLUE}  AGENT 1 — Monitor & Triage{C.END}")
+        result("  Severity", f"{C.YELLOW}{r.severity}{C.END}")
+        result("  Escalate", "Yes" if r.escalate_to_full_graph else "No")
+        result("  Reasoning", r.classification_reasoning[:80] + "...")
 
     if result_data.get("diagnosis"):
         d = result_data["diagnosis"]
-        print(f"\n{C.BOLD}{C.BLUE}  AGENTE 3 — Diagnostic Reasoner (Core){C.END}")
-        result("  Causa raíz", d.top_hypothesis.hypothesis)
-        result("  Confianza", f"{d.overall_confidence:.0%}")
-        result("  Evidencias", str(d.top_hypothesis.evidence[:2]))
-        result("  Rediagnosticar", "Sí" if d.requires_more_data else "No")
+        print(f"\n{C.BOLD}{C.BLUE}  AGENT 3 — Diagnostic Reasoner (Core){C.END}")
+        result("  Root cause", d.top_hypothesis.hypothesis)
+        result("  Confidence", f"{d.overall_confidence:.0%}")
+        result("  Evidence", str(d.top_hypothesis.evidence[:2]))
+        result("  Re-diagnose", "Yes" if d.requires_more_data else "No")
 
     if result_data.get("remediation_plan"):
         p = result_data["remediation_plan"]
-        print(f"\n{C.BOLD}{C.BLUE}  AGENTE 4 — Remediation Planner{C.END}")
-        result("  Acciones totales", len(p.actions))
-        result("  Auto-ejecutables", p.auto_executable)
-        result("  Requieren aprobación HITL", p.requires_approval)
+        print(f"\n{C.BOLD}{C.BLUE}  AGENT 4 — Remediation Planner{C.END}")
+        result("  Total actions", len(p.actions))
+        result("  Auto-executable", p.auto_executable)
+        result("  Requires HITL approval", p.requires_approval)
         for a in p.actions:
             icon = "🔴" if str(a.risk) == "ActionRisk.HIGH" else "🟢"
             print(f"    {icon} [{a.risk}] {a.description}")
@@ -152,71 +153,71 @@ def print_results(result_data, elapsed):
     if result_data.get("hitl_request"):
         h = result_data["hitl_request"]
         print(f"\n{C.BOLD}{C.BLUE}  HITL — Slack Notification{C.END}")
-        result("  Canal", h.slack_channel)
-        result("  Acción", h.action.description)
-        result("  Comando", h.action.command)
-        result("  Timeout", f"{h.timeout_minutes} minutos")
+        result("  Channel", h.slack_channel)
+        result("  Action", h.action.description)
+        result("  Command", h.action.command)
+        result("  Timeout", f"{h.timeout_minutes} minutes")
 
     if result_data.get("postmortem"):
         pm = result_data["postmortem"]
-        print(f"\n{C.BOLD}{C.BLUE}  AGENTE 5 — Postmortem Writer{C.END}")
-        result("  Título", pm.title)
-        result("  Causa confirmada", pm.confirmed_root_cause[:80])
+        print(f"\n{C.BOLD}{C.BLUE}  AGENT 5 — Postmortem Writer{C.END}")
+        result("  Title", pm.title)
+        result("  Confirmed root cause", pm.confirmed_root_cause[:80])
         result("  Time-to-detect", f"{pm.time_to_detect_minutes} min")
         result("  Time-to-resolve", f"{pm.time_to_resolve_minutes} min")
-        result("  Lecciones", pm.lessons_learned[0] if pm.lessons_learned else "N/A")
+        result("  Lessons learned", pm.lessons_learned[0] if pm.lessons_learned else "N/A")
 
-    print(f"\n{C.BOLD}  ⏱  Tiempo total de ejecución: {elapsed:.1f}s{C.END}")
+    print(f"\n{C.BOLD}  ⏱  Total execution time: {elapsed:.1f}s{C.END}")
     print(f"{C.BOLD}  📊 LangSmith: https://eu.smith.langchain.com{C.END}")
 
 
 def print_architecture():
-    """Muestra el resumen de arquitectura al final."""
+    """Display architecture summary."""
     print(f"""
-{C.BOLD}{C.CYAN}  ARQUITECTURA{C.END}
+{C.BOLD}{C.CYAN}  ARCHITECTURE{C.END}
   ┌─────────────────────────────────────────────────────┐
-  │  Alerta → Monitor & Triage (Groq, <500ms)          │
-  │       → Data Collector (asyncio.gather paralelo)    │
+  │  Alert → Monitor & Triage (Groq, <500ms)           │
+  │       → Data Collector (asyncio.gather parallel)    │
   │       → Diagnostic Reasoner (RAG + CoT)             │
-  │            [confianza baja] → retry Data Collector  │
-  │       → Remediation Planner (matriz LOW/HIGH)       │
+  │            [low confidence] → retry Data Collector  │
+  │       → Remediation Planner (LOW/HIGH matrix)       │
   │            [HIGH] → HITL Slack bot                  │
-  │       → Postmortem Writer → ingesta ChromaDB        │
-  │                              (loop de aprendizaje)  │
+  │       → Postmortem Writer → ChromaDB ingestion      │
+  │                              (learning loop)        │
   └─────────────────────────────────────────────────────┘
   Stack: LangGraph · Groq · ChromaDB · Pydantic v2
          FastAPI · Docker · LangSmith · Slack API
-  Tests: 52 passed · CI/CD: GitHub Actions
+  Tests: 71 passed · CI/CD: GitHub Actions
 """)
 
 
 def main():
     header("AI INCIDENT RESPONSE SYSTEM — Demo")
 
-    step(1, "Verificando configuración...")
+    step(1, "Checking configuration...")
     check_env()
 
-    step(2, "Verificando knowledge base (ChromaDB)...")
+    step(2, "Checking knowledge base (ChromaDB)...")
     seed_if_needed()
 
-    step(3, "Ejecutando incidente de demo — payment-service P1...")
+    step(3, "Running demo incident — payment-service...")
     print()
     result_data, elapsed = run_demo_incident()
 
-    step(4, "Resultados del pipeline completo:")
+    step(4, "Full pipeline results:")
     print_results(result_data, elapsed)
 
-    step(5, "Resumen de arquitectura:")
+    step(5, "Architecture summary:")
     print_architecture()
 
-    header("DEMO COMPLETADA")
-    ok("Sistema end-to-end funcionando")
-    ok("5 agentes ejecutados correctamente")
+    header("DEMO COMPLETE")
+    ok("End-to-end system working")
+    ok("5 agents executed successfully")
     if result_data.get("remediation_plan") and result_data["remediation_plan"].requires_approval:
-        ok("HITL enviado a Slack — revisa #incident-approvals")
-    ok("Postmortem ingestado en ChromaDB (loop de aprendizaje)")
+        ok("HITL sent to Slack -- check #incident-approvals")
+    ok("Postmortem ingested into ChromaDB (learning loop)")
     if os.getenv("LANGSMITH_API_KEY"):
-        ok("Traza completa disponible en LangSmith")
+        ok("Full trace available in LangSmith")
     print()
 
 
