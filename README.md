@@ -1,6 +1,6 @@
 # AI Incident Response System
 
-> Agentic SRE automation: 5 LangGraph agents that diagnose and remediate production incidents in <10s. RAG over internal runbooks, Human-in-the-Loop via Slack, full traceability with LangSmith.
+> Personal project: 5 LangGraph agents that triage, diagnose and propose remediations for infrastructure incidents. RAG over runbooks, Human-in-the-Loop via Slack, tracing with LangSmith. The tools fall back to mock data when no Prometheus, Loki, GitHub or Kubernetes endpoint is configured.
 
 ---
 
@@ -22,7 +22,7 @@
 
 ## 1. Motivation
 
-SRE teams spend an average of 40-60 minutes identifying the root cause of a P1 incident. During that time, a production system can generate losses of tens of thousands of euros and affect thousands of users. The manual process has three structural problems:
+Finding the root cause of a serious incident can take an on-call engineer a long time, and every minute of downtime costs money and affects users. The manual process has three structural problems:
 
 **Context fragmentation.** Logs are in Loki, metrics in Prometheus, recent commits in GitHub, and pod status in Kubernetes. The on-call SRE must correlate these sources manually under pressure.
 
@@ -57,7 +57,7 @@ Prometheus/PagerDuty Alert
          |
          v
 +-----------------+
-|  Agent 3        |  Groq Llama 3.3 70B (dev) / Claude Sonnet (prod)
+|  Agent 3        |  Groq Llama 3.3 70B (Claude Sonnet planned)
 |  Diagnostic     |  RAG over runbooks + historical postmortems
 |  Reasoner  -----+--[low confidence]--> Agent 2 (retry, wider window)
 |  (Core)         |  Chain-of-thought + Pydantic structured output
@@ -129,7 +129,7 @@ Prometheus/PagerDuty Alert
 
 **Role:** Core of the project. The most complex agent in the system.
 
-**Model:** Groq Llama 3.3 70B (dev) / Claude Sonnet (prod).
+**Model:** Groq Llama 3.3 70B. Claude Sonnet is the planned upgrade (not tested yet).
 
 **Responsibilities:** reasons over the full collected context, queries the RAG knowledge base of runbooks and historical postmortems, generates root cause hypotheses ordered by probability with evidence, sets `requires_more_data=True` if confidence is low.
 
@@ -141,7 +141,7 @@ Prometheus/PagerDuty Alert
 
 **Role:** Translates the diagnosis into concrete actions.
 
-**Model:** Groq Llama 3.3 70B (dev) / Claude Sonnet (prod).
+**Model:** Groq Llama 3.3 70B. Claude Sonnet is the planned upgrade (not tested yet).
 
 **Permission matrix:**
 - **LOW (auto-executable):** restart pod, clear cache, reload config, scale replicas
@@ -155,7 +155,7 @@ Prometheus/PagerDuty Alert
 
 **Role:** Closes the loop. Generates the postmortem and feeds back into the system.
 
-**Model:** Groq Llama 3.3 70B (dev) / Claude Sonnet (prod).
+**Model:** Groq Llama 3.3 70B. Claude Sonnet is the planned upgrade (not tested yet).
 
 **Key differentiator:** ingests the generated postmortem into ChromaDB so future diagnoses benefit from accumulated knowledge. Closed learning loop.
 
@@ -176,12 +176,12 @@ Prometheus/PagerDuty Alert
 
 ### LLM Models
 
-| Agent | Model (dev) | Model (prod) | Criterion |
+| Agent | Model used today | Planned (not tested yet) | Criterion |
 |---|---|---|---|
 | Agent 1 (Triage) | Groq Llama 3.3 70B | Groq Llama 3.3 70B | Latency <500ms |
 | Agents 3/4/5 | Groq Llama 3.3 70B | Claude Sonnet | Deep reasoning |
 | RAG contextualization | Groq Llama 3.3 70B | Claude Haiku | Minimum cost per chunk |
-| Global fallback | GPT-4o | GPT-4o | Resilience |
+| Global fallback | none | GPT-4o | Resilience |
 
 ### RAG -- Knowledge Base
 
@@ -229,7 +229,7 @@ All implemented with **Pydantic v2** -- strict validation, native JSON Schema, r
 
 **Decision:** Different models per task type.
 
-**Reasons:** Agent 1 needs latency below 500ms -- Groq with Llama 3.3 70B responds in ~300ms. Agents 3, 4 and 5 need deep reasoning and reliable structured outputs -- Claude Sonnet in production. Claude Haiku for RAG chunk contextualization where hundreds of small calls are generated. GPT-4o as global fallback.
+**Reasons:** Agent 1 needs latency below 500ms -- Groq with Llama 3.3 70B responds in ~300ms. Agents 3, 4 and 5 need deep reasoning and reliable structured outputs, so the plan is Claude Sonnet for them, Claude Haiku for RAG chunk contextualization (hundreds of small calls) and GPT-4o as global fallback. Today everything runs on Groq; the other models are not wired in or tested yet.
 
 **Trade-off:** Higher operational complexity (multiple API keys). Offset by cost-latency-quality optimization per task.
 
@@ -241,7 +241,7 @@ All implemented with **Pydantic v2** -- strict validation, native JSON Schema, r
 
 **Decision:** Contextual Retrieval (Anthropic, September 2024).
 
-**Reasons:** Operational runbooks lose meaning when split into 512-token chunks. Contextual Retrieval adds 50-100 LLM-generated context tokens to each chunk before embedding. According to Anthropic benchmarks, this reduces retrieval errors by up to 67% vs classic RAG.
+**Reasons:** Operational runbooks lose meaning when split into 512-token chunks. Contextual Retrieval adds 50-100 LLM-generated context tokens to each chunk before embedding. Anthropic reports 35% fewer failed retrievals with contextual embeddings, 49% when contextual BM25 is added and 67% with reranking on top. This project combines the same three pieces (BM25, dense embeddings and a Cohere reranker), but I have not measured the gain on its own data.
 
 **Trade-off:** Additional ingestion cost (one-time per document, not per retrieval). Offset by improved diagnostic precision.
 
@@ -265,13 +265,13 @@ All implemented with **Pydantic v2** -- strict validation, native JSON Schema, r
 
 **Decision:** Direct evaluation against ground truth with LangSmith and custom metrics.
 
-**Reasons:** RAGAS has dependency conflicts with LangGraph 0.2+ in Python 3.11 and adds LLM cost per evaluation. Direct evaluation against a dataset of 8 historical incidents with real root causes is more relevant than abstract faithfulness metrics.
+**Reasons:** RAGAS has dependency conflicts with LangGraph 0.2+ in Python 3.11 and adds LLM cost per evaluation. Direct evaluation against 8 test incidents, each with a known root cause, severity and correct actions, says more about this system than abstract faithfulness metrics.
 
 ---
 
 ## 6. Evaluation Results
 
-Evaluation over **8 historical incidents** with real ground truth (root cause, severity, correct actions). Model: Groq Llama 3.3 70B (development).
+Evaluation over **8 test incidents** written for this project, each with a known root cause, severity and correct actions. Model: Groq Llama 3.3 70B. With 8 cases one incident is 12.5 points, so read these numbers as a first measurement, not a benchmark.
 
 | Metric | Result | Production target |
 |---|---|---|
@@ -285,7 +285,9 @@ Evaluation over **8 historical incidents** with real ground truth (root cause, s
 | Avg diagnosis attempts | 1.0 | -- |
 | Time-to-diagnose (avg) | ~7s | <30s |
 
-**Analysis:** The system correctly diagnoses incidents with clear signals in logs and commits (DB connection pool, N+1 queries, Elasticsearch). It struggles with infrastructure incidents without code signals (expired SSL, full disk). The dev/prod gap closes with Claude Sonnet, which has better reasoning over ambiguous signals.
+**Analysis:** The system correctly diagnoses incidents with clear signals in logs and commits (DB connection pool, N+1 queries, Elasticsearch). It struggles with infrastructure incidents without code signals (expired SSL, full disk). Next step: run the same 8 incidents with Claude Sonnet to see whether a stronger model closes the gap (not tested yet).
+
+`evals/results_latest.json` holds whatever the last run evaluated; right now that is a single-incident run (`--incident hist-001`). `python -m evals.run_evals` regenerates it over all 8.
 
 ---
 
@@ -326,10 +328,10 @@ ai-incident-response/
 |
 |-- evals/                      # Evaluation with LangSmith + ground truth
 |   |-- datasets/
-|   |   `-- historical_incidents.json   # 8 incidents with real root causes
+|   |   `-- historical_incidents.json   # 8 test incidents with known root causes
 |   |-- run_evals.py            # Evaluation runner
 |   |-- metrics.py              # Top-1/3 accuracy, keyword score, severity accuracy
-|   `-- results_latest.json     # Latest evaluation results
+|   `-- results_latest.json     # Output of the last run (overwritten each time)
 |
 |-- api/                        # FastAPI backend
 |   `-- main.py                 # REST + WebSocket + /slack/actions callback
@@ -568,9 +570,9 @@ When Agent 4 generates a HIGH risk action, the bot sends to `#incident-approvals
 
 ## Project Summary
 
-**For recruiters:** AI-powered incident response system that automates the diagnosis and remediation of production infrastructure outages. 5 specialized AI agents work together to detect, investigate, diagnose, remediate, and document incidents automatically. High-risk actions require human approval via a Slack bot before execution. Reduces time-to-diagnose from 40-60 minutes to under 10 seconds. Evaluated on 8 real historical incidents, 71 automated tests, deployed with Docker.
+**For recruiters:** AI-powered incident response system that automates the diagnosis and remediation of production infrastructure outages. 5 specialized AI agents work together to detect, investigate, diagnose, remediate, and document incidents automatically. High-risk actions require human approval via a Slack bot before execution. Produces a first diagnosis in about 7 seconds. On 8 test incidents the correct root cause is the top hypothesis in 3 and among the top 3 in 5. Personal project with 71 automated tests; runs with Docker.
 
-**For technical interviewers:** 5 LangGraph agents with cyclic state and conditional edges -- the Diagnostic Reasoner loops back to the Data Collector when confidence is low. RAG over internal runbooks with Contextual Retrieval (67% fewer retrieval errors vs classic RAG). Pydantic v2 structured outputs, LangSmith tracing, Slack HITL with Approve/Reject buttons. Top-3 diagnostic accuracy of 62% with Groq in development; architecture prepared for Claude Sonnet in production.
+**For technical interviewers:** 5 LangGraph agents with cyclic state and conditional edges -- the Diagnostic Reasoner loops back to the Data Collector when confidence is low. RAG over runbooks with Contextual Retrieval (Anthropic's technique; the gain is not measured here). Pydantic v2 structured outputs, LangSmith tracing, Slack HITL with Approve/Reject buttons. Top-3 diagnostic accuracy of 62% (5 of 8 test incidents) with Groq; Claude Sonnet is the next model to test.
 
 ---
 
